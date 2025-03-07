@@ -145,8 +145,9 @@ typedef uint8_t SelectAndCallQualifier;
 
 typedef uint8_t QualifierOfInterrogation;
 
-#define IEC60870_QOI_STATION 20
-#define IEC60870_QOI_GROUP_1 21
+// QOI Qualifier of Interrogation 协议中执行总召唤或分组召唤操作
+#define IEC60870_QOI_STATION 20 // 总召唤
+#define IEC60870_QOI_GROUP_1 21 // IEC60870_QOI_GROUP_x 分组总召
 #define IEC60870_QOI_GROUP_2 22
 #define IEC60870_QOI_GROUP_3 23
 #define IEC60870_QOI_GROUP_4 24

@@ -1164,6 +1164,7 @@ encodeIOA(CS104_Connection self, Frame frame, int ioa)
         T104Frame_setNextByte(frame, (uint8_t) ((ioa / 0x10000) & 0xff));
 }
 
+// 启动数据传输 Data Transfer
 void
 CS104_Connection_sendStartDT(CS104_Connection self)
 {

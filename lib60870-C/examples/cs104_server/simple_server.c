@@ -60,6 +60,7 @@ clockSyncHandler (void* parameter, IMasterConnection connection, CS101_ASDU asdu
     return true;
 }
 
+// 总召处理
 static bool
 interrogationHandler(void* parameter, IMasterConnection connection, CS101_ASDU asdu, uint8_t qoi)
 {
@@ -72,7 +73,6 @@ interrogationHandler(void* parameter, IMasterConnection connection, CS101_ASDU a
         IMasterConnection_sendACT_CON(connection, asdu, false);
 
         /* The CS101 specification only allows information objects without timestamp in GI responses */
-
         CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_INTERROGATED_BY_STATION,
                 0, 1, false, false);
 
@@ -148,6 +148,7 @@ interrogationHandler(void* parameter, IMasterConnection connection, CS101_ASDU a
     return true;
 }
 
+// 遥调与遥控处理
 static bool
 asduHandler(void* parameter, IMasterConnection connection, CS101_ASDU asdu)
 {
@@ -282,6 +283,10 @@ main(int argc, char** argv)
 
     int16_t scaledValue = 0;
 
+    // 遥信点 SinglePointInformation_create
+    // 遥测点 MeasuredValueNormalized_create
+    // 遥调点 SetpointCommandNormalized_create
+    // 遥控点 SingleCommand_create
     while (running) {
 
         Thread_sleep(1000);

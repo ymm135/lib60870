@@ -47,7 +47,7 @@ connectionHandler (void* parameter, CS104_Connection connection, CS104_Connectio
 
 /*
  * CS101_ASDUReceivedHandler implementation
- *
+ * 遥调遥控处理结果
  * For CS104 the address parameter has to be ignored
  */
 static bool
@@ -58,7 +58,7 @@ asduReceivedHandler (void* parameter, int address, CS101_ASDU asdu)
             CS101_ASDU_getTypeID(asdu),
             CS101_ASDU_getNumberOfElements(asdu));
 
-    if (CS101_ASDU_getTypeID(asdu) == M_ME_TE_1) {
+    if (CS101_ASDU_getTypeID(asdu) == M_ME_TE_1) { // 测量值带时标  
 
         printf("  measured scaled values with CP56Time2a timestamp:\n");
 
@@ -77,7 +77,7 @@ asduReceivedHandler (void* parameter, int address, CS101_ASDU asdu)
             MeasuredValueScaledWithCP56Time2a_destroy(io);
         }
     }
-    else if (CS101_ASDU_getTypeID(asdu) == M_SP_NA_1) {
+    else if (CS101_ASDU_getTypeID(asdu) == M_SP_NA_1) { // 遥信
         printf("  single point information:\n");
 
         int i;
@@ -95,7 +95,7 @@ asduReceivedHandler (void* parameter, int address, CS101_ASDU asdu)
             SinglePointInformation_destroy(io);
         }
     }
-    else if (CS101_ASDU_getTypeID(asdu) == C_TS_TA_1) {
+    else if (CS101_ASDU_getTypeID(asdu) == C_TS_TA_1) { // 测试帧
         printf("  test command with timestamp\n");
     }
 
@@ -105,9 +105,9 @@ asduReceivedHandler (void* parameter, int address, CS101_ASDU asdu)
 int
 main(int argc, char** argv)
 {
-    const char* ip = "localhost";
-    uint16_t port = IEC_60870_5_104_DEFAULT_PORT;
-    const char* localIp = NULL;
+    const char* ip = "localhost"; // 从站IP地址
+    uint16_t port = IEC_60870_5_104_DEFAULT_PORT; // 从站端口
+    const char* localIp = NULL; // 本地IP地址
     int localPort = -1;
 
     if (argc > 1)
@@ -141,10 +141,12 @@ main(int argc, char** argv)
     if (CS104_Connection_connect(con)) {
         printf("Connected!\n");
 
+        // 启动数据传输 Data Transfer
         CS104_Connection_sendStartDT(con);
 
         Thread_sleep(2000);
 
+        // 召唤限定词 IEC60870_QOI_STATION 站级总召唤
         CS104_Connection_sendInterrogationCommand(con, CS101_COT_ACTIVATION, 1, IEC60870_QOI_STATION);
 
         Thread_sleep(5000);
@@ -152,12 +154,14 @@ main(int argc, char** argv)
         struct sCP56Time2a testTimestamp;
         CP56Time2a_createFromMsTimestamp(&testTimestamp, Hal_getTimeInMs());
 
+        // 测试帧带时标 
         CS104_Connection_sendTestCommandWithTimestamp(con, 1, 0x4938, &testTimestamp);
 
 #if 0
         InformationObject sc = (InformationObject)
                 SingleCommand_create(NULL, 5000, true, false, 0);
 
+        // 遥控单点命令 C_SC_NA_1 
         printf("Send control command C_SC_NA_1\n");
         CS104_Connection_sendProcessCommandEx(con, CS101_COT_ACTIVATION, 1, sc);
 

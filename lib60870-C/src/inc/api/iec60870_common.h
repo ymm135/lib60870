@@ -281,26 +281,27 @@ struct sCS104_APCIParameters {
 
 #include "cs101_information_objects.h"
 
+// （Cause of Transmission，COT） 数据的传输目的或事件触发原因
 typedef enum {
-    CS101_COT_PERIODIC = 1,
-    CS101_COT_BACKGROUND_SCAN = 2,
-    CS101_COT_SPONTANEOUS = 3,
-    CS101_COT_INITIALIZED = 4,
-    CS101_COT_REQUEST = 5,
-    CS101_COT_ACTIVATION = 6,
-    CS101_COT_ACTIVATION_CON = 7,
-    CS101_COT_DEACTIVATION = 8,
-    CS101_COT_DEACTIVATION_CON = 9,
-    CS101_COT_ACTIVATION_TERMINATION = 10,
-    CS101_COT_RETURN_INFO_REMOTE = 11,
-    CS101_COT_RETURN_INFO_LOCAL = 12,
-    CS101_COT_FILE_TRANSFER = 13,
-    CS101_COT_AUTHENTICATION = 14,
-    CS101_COT_MAINTENANCE_OF_AUTH_SESSION_KEY = 15,
+    CS101_COT_PERIODIC = 1, // 定期上报类 周期性上报（Periodic）设备按设定的周期性发送测量值或状态信息
+    CS101_COT_BACKGROUND_SCAN = 2, // 定期上报类  由设备定期进行后台数据扫描后上报（用于优化数据刷新）
+    CS101_COT_SPONTANEOUS = 3, // 事件触发类 自发上报（Spontaneous）—— 由于设备状态变化（如开关状态变化）而自动发送数据。
+    CS101_COT_INITIALIZED = 4, // 事件触发类 设备初始化（Initialized）—— 设备启动或重启时，上报初始化状态。
+    CS101_COT_REQUEST = 5, // 事件触发类 请求数据（Request）—— 由主站发送的数据请求命令。
+    CS101_COT_ACTIVATION = 6, // 激活与去激活类 激活命令（Activation）—— 例如主站请求执行遥控操作（如断路器合闸）。
+    CS101_COT_ACTIVATION_CON = 7, // 激活与去激活类 激活确认（Activation Confirmation）—— 服务器确认收到激活请求。
+    CS101_COT_DEACTIVATION = 8, // 激活与去激活类 去激活命令（Deactivation）—— 例如取消某个已执行的遥控命令。
+    CS101_COT_DEACTIVATION_CON = 9, // 去激活确认（Deactivation Confirmation）—— 服务器确认收到去激活请求。
+    CS101_COT_ACTIVATION_TERMINATION = 10, // 激活终止（Activation Termination）—— 远程控制命令执行完成后的终止通知。
+    CS101_COT_RETURN_INFO_REMOTE = 11, // 远程信息返回（Return Information Remote）—— 远程终端设备（RTU）返回信息。
+    CS101_COT_RETURN_INFO_LOCAL = 12, // 本地信息返回（Return Information Local）—— 设备本地系统返回的信息。
+    CS101_COT_FILE_TRANSFER = 13, // 文件传输（File Transfer）—— 传输数据文件，如固件更新或日志文件。
+    CS101_COT_AUTHENTICATION = 14, // 认证相关（Authentication）—— 进行安全认证，如主站或子站的身份验证。
+    CS101_COT_MAINTENANCE_OF_AUTH_SESSION_KEY = 15, // 
     CS101_COT_MAINTENANCE_OF_USER_ROLE_AND_UPDATE_KEY = 16,
-    CS101_COT_INTERROGATED_BY_STATION = 20,
-    CS101_COT_INTERROGATED_BY_GROUP_1 = 21,
-    CS101_COT_INTERROGATED_BY_GROUP_2 = 22,
+    CS101_COT_INTERROGATED_BY_STATION = 20, // 总召唤（Interrogated by Station）—— 主站请求设备上报全部测量值。
+    CS101_COT_INTERROGATED_BY_GROUP_1 = 21, // 21 ~ 36 按组召唤（Interrogated by Group X）—— 按照不同的组（1-16）请求数据，如某类测量点。
+    CS101_COT_INTERROGATED_BY_GROUP_2 = 22, 
     CS101_COT_INTERROGATED_BY_GROUP_3 = 23,
     CS101_COT_INTERROGATED_BY_GROUP_4 = 24,
     CS101_COT_INTERROGATED_BY_GROUP_5 = 25,
@@ -315,15 +316,15 @@ typedef enum {
     CS101_COT_INTERROGATED_BY_GROUP_14 = 34,
     CS101_COT_INTERROGATED_BY_GROUP_15 = 35,
     CS101_COT_INTERROGATED_BY_GROUP_16 = 36,
-    CS101_COT_REQUESTED_BY_GENERAL_COUNTER = 37,
-    CS101_COT_REQUESTED_BY_GROUP_1_COUNTER = 38,
+    CS101_COT_REQUESTED_BY_GENERAL_COUNTER = 37, // 请求所有计数器值（Requested by General Counter）—— 主站请求设备返回所有计数器数据。
+    CS101_COT_REQUESTED_BY_GROUP_1_COUNTER = 38, // 按组请求计数器值（Requested by Group X Counter）—— 仅请求特定计数器组的数据。
     CS101_COT_REQUESTED_BY_GROUP_2_COUNTER = 39,
     CS101_COT_REQUESTED_BY_GROUP_3_COUNTER = 40,
     CS101_COT_REQUESTED_BY_GROUP_4_COUNTER = 41,
-    CS101_COT_UNKNOWN_TYPE_ID = 44,
-    CS101_COT_UNKNOWN_COT = 45,
-    CS101_COT_UNKNOWN_CA = 46,
-    CS101_COT_UNKNOWN_IOA = 47
+    CS101_COT_UNKNOWN_TYPE_ID = 44, // 未知类型标识（Unknown Type ID）—— 服务器接收到无法识别的ASDU类型。
+    CS101_COT_UNKNOWN_COT = 45, // 未知传输原因（Unknown Cause of Transmission）—— 服务器无法解析COT字段。
+    CS101_COT_UNKNOWN_CA = 46, // 未知公共地址（Unknown Common Address）—— 设备地址无效或超出范围。
+    CS101_COT_UNKNOWN_IOA = 47 // 未知信息对象地址（Unknown Information Object Address）—— 服务器收到的IOA（信息对象地址）无效或不存在。
 } CS101_CauseOfTransmission;
 
 const char*

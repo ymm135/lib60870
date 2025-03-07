@@ -83,6 +83,13 @@ struct sFrameVFT asduFrameVFT = {
         asduFrame_getSpaceLeft
 };
 
+// parameters 应用层参数，包含ASDU的结构定义，如ASDU最大长度、序列号支持等
+// isSequence 信息对象是否按顺序排列（true：顺序，false：非顺序）
+// cot 	传输原因（COT），指示数据的来源或目的，如 CS101_COT_SPONTANEOUS（自发上报）、CS101_COT_INTERROGATED_BY_STATION（总召）
+// oa 信息对象地址（Object Address，IOA），表示具体的数据点编号（例如某个遥信点）
+// ca 公共地址（Common Address，CA），标识站点或设备编号，主站和子站之间用此标识进行通信
+// isTest 是否为测试帧（true：测试报文，false：正常数据）
+// isNegative 是否为否定响应（true：否定响应，false：正常）
 CS101_ASDU
 CS101_ASDU_create(CS101_AppLayerParameters parameters, bool isSequence, CS101_CauseOfTransmission cot, int oa, int ca,
         bool isTest, bool isNegative)
