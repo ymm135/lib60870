@@ -232,13 +232,15 @@ main(int argc, char** argv)
 
     /* create a new slave/server instance with default connection parameters and
      * default message queue size */
-    CS104_Slave slave = CS104_Slave_create(10, 10);
+    // 队列大小在冗余模式时会起作用 SINGLE_REDUNDANCY_GROUP
+    CS104_Slave slave = CS104_Slave_create(100, 100);
 
     CS104_Slave_setLocalAddress(slave, "0.0.0.0");
 
     /* Set mode to a single redundancy group
      * NOTE: library has to be compiled with CONFIG_CS104_SUPPORT_SERVER_MODE_SINGLE_REDUNDANCY_GROUP enabled (=1)
      */
+    // 单冗余组模式
     CS104_Slave_setServerMode(slave, CS104_MODE_SINGLE_REDUNDANCY_GROUP);
 
     /* get the connection parameters - we need them to create correct ASDUs -
@@ -301,7 +303,8 @@ main(int argc, char** argv)
 
         InformationObject_destroy(io);
 
-        /* Add ASDU to slave event queue */
+        /* Add ASDU to slave event queue */ 
+        // 存储每一帧 frame.c Frame_appendBytes/Frame_getBuffer,由链路层发送(link_layer.c) SerialTransceiverFT12_sendMessage由SerialPort_write
         CS104_Slave_enqueueASDU(slave, newAsdu);
 
         CS101_ASDU_destroy(newAsdu);

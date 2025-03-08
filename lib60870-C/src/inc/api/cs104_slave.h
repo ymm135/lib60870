@@ -50,9 +50,9 @@ extern "C" {
 typedef struct sCS104_Slave* CS104_Slave;
 
 typedef enum {
-    CS104_MODE_SINGLE_REDUNDANCY_GROUP,
-    CS104_MODE_CONNECTION_IS_REDUNDANCY_GROUP,
-    CS104_MODE_MULTIPLE_REDUNDANCY_GROUPS
+    CS104_MODE_SINGLE_REDUNDANCY_GROUP, // 单冗余组模式 通常用于简单的 IEC 104 通信，没有复杂的冗余机制。 
+    CS104_MODE_CONNECTION_IS_REDUNDANCY_GROUP, // 每个连接作为独立的冗余组 服务器不会对多个连接进行逻辑合并，每个连接独立处理数据。
+    CS104_MODE_MULTIPLE_REDUNDANCY_GROUPS // 多冗余组模式 服务器会按组管理多个连接，提供更高级的冗余支持。
 } CS104_ServerMode;
 
 typedef enum
