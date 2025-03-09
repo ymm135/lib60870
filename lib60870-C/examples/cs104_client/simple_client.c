@@ -5,9 +5,182 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#define QUEUE_SIZE 1000
+#define WORKER_THREADS 10
+#define MAX_ASDU_TYPES 32
+#define MAX_IOA_COUNT 65536
+
+typedef struct
+{
+    CS101_ASDU asdu;
+} ASDU_Item;
+
+typedef struct
+{
+    ASDU_Item buffer[QUEUE_SIZE];
+    int head;
+    int tail;
+    int count;
+    pthread_mutex_t lock;
+    Semaphore full;
+    Semaphore empty;
+} RingBuffer;
+
+typedef struct
+{
+    int asdu_count[MAX_ASDU_TYPES];               // 统计每个ASDU类型的数量
+    int ioa_count[MAX_ASDU_TYPES][MAX_IOA_COUNT]; // 每个ASDU类型下的每个IOA的数量
+    pthread_mutex_t lock;                         // 用于线程同步
+} ASDU_Stats;
+
+ASDU_Stats asduStats;  // 全局统计变量
+
+
+RingBuffer asduQueue;
+
+void ringBufferInit(RingBuffer *rb)
+{
+    rb->head = rb->tail = rb->count = 0;
+    pthread_mutex_init(&rb->lock, NULL);
+    rb->full = Semaphore_create(0);
+    rb->empty = Semaphore_create(QUEUE_SIZE);
+}
+
+void enqueue(RingBuffer *rb, CS101_ASDU *asdu)
+{
+    Semaphore_wait(rb->empty);
+    pthread_mutex_lock(&rb->lock);
+
+    rb->buffer[rb->tail].asdu = asdu;
+    rb->tail = (rb->tail + 1) % QUEUE_SIZE;
+    rb->count++;
+
+    pthread_mutex_unlock(&rb->lock);
+    Semaphore_post(rb->full);
+}
+
+CS101_ASDU *dequeue(RingBuffer *rb)
+{
+    Semaphore_wait(rb->full);
+    pthread_mutex_lock(&rb->lock);
+
+    CS101_ASDU *asdu = rb->buffer[rb->head].asdu;
+    rb->head = (rb->head + 1) % QUEUE_SIZE;
+    rb->count--;
+
+    pthread_mutex_unlock(&rb->lock);
+    Semaphore_post(rb->empty);
+    return asdu;
+}
+
+void updateStats(CS101_ASDU asdu)
+{
+    int typeID = CS101_ASDU_getTypeID(asdu);  // 获取ASDU类型
+    int numElements = CS101_ASDU_getNumberOfElements(asdu);  // 获取该类型下的元素数量
+
+    // 加锁，确保线程安全
+    pthread_mutex_lock(&asduStats.lock);
+
+    // 确保类型ID在合理范围内
+    if (typeID < 0 || typeID >= MAX_ASDU_TYPES) {
+        pthread_mutex_unlock(&asduStats.lock);
+        return;  // 如果类型ID不合法，直接返回
+    }
+
+    // 对应类型的ASDU计数增加
+    asduStats.asdu_count[typeID]++;
+
+    // 统计该类型下的每个IOA点位
+    for (int i = 0; i < numElements; i++)
+    {
+        InformationObject io = CS101_ASDU_getElement(asdu, i);  // 获取元素
+        if (io != NULL)
+        {
+            int ioa = InformationObject_getObjectAddress(io);  // 获取IOA地址
+            if (ioa >= 0 && ioa < MAX_IOA_COUNT)  // 确保IOA地址合法
+            {
+                // 根据ASDU类型统计对应的IOA点位
+                asduStats.ioa_count[typeID][ioa]++;
+            }
+        }
+    }
+
+    // 解锁
+    pthread_mutex_unlock(&asduStats.lock);
+}
+
+
+void workerThreadFunction(void *arg)
+{
+    while (1)
+    {
+        CS101_ASDU *asdu = dequeue(&asduQueue);
+        if (asdu)
+        {
+            updateStats(asdu);
+        }
+        CS101_ASDU_destroy(asdu);
+    }
+}
+
+void statsThreadFunction(void *arg)
+{
+    while (1)
+    {
+        Thread_sleep(1000);
+        pthread_mutex_lock(&asduStats.lock);
+
+        printf("=== 每秒 ASDU及IOA 统计 ===\n");
+        for (int i = 0; i < MAX_ASDU_TYPES; i++)
+        {
+            if (asduStats.asdu_count[i] > 0)
+            {
+                // printf("ASDU 类型 %d: %d 个\n", i, asduStats.asdu_count[i]);
+                
+                int ioa_count = 0;
+                // 打印每种ASDU类型下的IOA统计
+                for (int j = 0; j < MAX_IOA_COUNT; j++)
+                {
+                    if (asduStats.ioa_count[i][j] > 0)
+                    {   // 统计每一种IOA有多少个点位 IOA 8: 1 次
+                        // printf("\tIOA %d: %d 次\n", j, asduStats.ioa_count[i][j]);
+                        ioa_count ++;
+                    }
+                }
+
+                printf("ASDU 类型 %s(%d): %d 个\n", TypeID_toString(i), i, ioa_count);
+            }
+        }
+
+        printf("\n");
+
+        // 重置统计
+        memset(&asduStats, 0, sizeof(ASDU_Stats));
+
+        pthread_mutex_unlock(&asduStats.lock);
+    }
+}
+
+
+void initThreads()
+{
+    ringBufferInit(&asduQueue);
+    pthread_mutex_init(&asduStats.lock, NULL);
+    memset(&asduStats, 0, sizeof(asduStats));
+
+    for (int i = 0; i < WORKER_THREADS; i++)
+    {
+        Thread workerThread = Thread_create(workerThreadFunction, NULL, false);
+        Thread_start(workerThread);
+    }
+
+    Thread statsThread = Thread_create(statsThreadFunction, NULL, false);
+    Thread_start(statsThread);
+}
+
 /* Callback handler to log sent or received messages (optional) */
 static void
-rawMessageHandler (void* parameter, uint8_t* msg, int msgSize, bool sent)
+rawMessageHandler(void *parameter, uint8_t *msg, int msgSize, bool sent)
 {
     if (sent)
         printf("SEND: ");
@@ -15,7 +188,8 @@ rawMessageHandler (void* parameter, uint8_t* msg, int msgSize, bool sent)
         printf("RCVD: ");
 
     int i;
-    for (i = 0; i < msgSize; i++) {
+    for (i = 0; i < msgSize; i++)
+    {
         printf("%02x ", msg[i]);
     }
 
@@ -24,9 +198,10 @@ rawMessageHandler (void* parameter, uint8_t* msg, int msgSize, bool sent)
 
 /* Connection event handler */
 static void
-connectionHandler (void* parameter, CS104_Connection connection, CS104_ConnectionEvent event)
+connectionHandler(void *parameter, CS104_Connection connection, CS104_ConnectionEvent event)
 {
-    switch (event) {
+    switch (event)
+    {
     case CS104_CONNECTION_OPENED:
         printf("Connection established\n");
         break;
@@ -47,67 +222,29 @@ connectionHandler (void* parameter, CS104_Connection connection, CS104_Connectio
 
 /*
  * CS101_ASDUReceivedHandler implementation
- * 遥调遥控处理结果
  * For CS104 the address parameter has to be ignored
  */
+// ASDU 回包处理，比如突变上送的值。
 static bool
-asduReceivedHandler (void* parameter, int address, CS101_ASDU asdu)
+asduReceivedHandler(void *parameter, int address, CS101_ASDU asdu)
 {
-    printf("RECVD ASDU type: %s(%i) elements: %i\n",
-            TypeID_toString(CS101_ASDU_getTypeID(asdu)),
-            CS101_ASDU_getTypeID(asdu),
-            CS101_ASDU_getNumberOfElements(asdu));
 
-    if (CS101_ASDU_getTypeID(asdu) == M_ME_TE_1) { // 测量值带时标  
-
-        printf("  measured scaled values with CP56Time2a timestamp:\n");
-
-        int i;
-
-        for (i = 0; i < CS101_ASDU_getNumberOfElements(asdu); i++) {
-
-            MeasuredValueScaledWithCP56Time2a io =
-                    (MeasuredValueScaledWithCP56Time2a) CS101_ASDU_getElement(asdu, i);
-
-            printf("    IOA: %i value: %i\n",
-                    InformationObject_getObjectAddress((InformationObject) io),
-                    MeasuredValueScaled_getValue((MeasuredValueScaled) io)
-            );
-
-            MeasuredValueScaledWithCP56Time2a_destroy(io);
-        }
+    CS101_ASDU *asduCopy = CS101_ASDU_clone(asdu, NULL);
+    if (asduCopy)
+    {
+        enqueue(&asduQueue, asduCopy);
     }
-    else if (CS101_ASDU_getTypeID(asdu) == M_SP_NA_1) { // 遥信
-        printf("  single point information:\n");
-
-        int i;
-
-        for (i = 0; i < CS101_ASDU_getNumberOfElements(asdu); i++) {
-
-            SinglePointInformation io =
-                    (SinglePointInformation) CS101_ASDU_getElement(asdu, i);
-
-            printf("    IOA: %i value: %i\n",
-                    InformationObject_getObjectAddress((InformationObject) io),
-                    SinglePointInformation_getValue((SinglePointInformation) io)
-            );
-
-            SinglePointInformation_destroy(io);
-        }
+    else
+    {
+        printf("ASDU copy failed!\n");
     }
-    else if (CS101_ASDU_getTypeID(asdu) == C_TS_TA_1) { // 测试帧
-        printf("  test command with timestamp\n");
-    }
-
-    return true;
 }
 
-int
-main(int argc, char** argv)
+int main(int argc, char **argv)
 {
-    const char* ip = "localhost"; // 从站IP地址
+    const char *ip = "localhost";                 // 从站IP地址
     uint16_t port = IEC_60870_5_104_DEFAULT_PORT; // 从站端口
-    const char* localIp = NULL; // 本地IP地址
+    const char *localIp = NULL;                   // 本地IP地址
     int localPort = -1;
 
     if (argc > 1)
@@ -121,6 +258,8 @@ main(int argc, char** argv)
 
     if (argc > 4)
         port = atoi(argv[4]);
+
+    initThreads();
 
     printf("Connecting to: %s:%i\n", ip, port);
     CS104_Connection con = CS104_Connection_create(ip, port);
@@ -136,9 +275,10 @@ main(int argc, char** argv)
         CS104_Connection_setLocalAddress(con, localIp, localPort);
 
     /* uncomment to log messages */
-    //CS104_Connection_setRawMessageHandler(con, rawMessageHandler, NULL);
+    // CS104_Connection_setRawMessageHandler(con, rawMessageHandler, NULL);
 
-    if (CS104_Connection_connect(con)) {
+    if (CS104_Connection_connect(con))
+    {
         printf("Connected!\n");
 
         // 启动数据传输 Data Transfer
@@ -154,7 +294,7 @@ main(int argc, char** argv)
         struct sCP56Time2a testTimestamp;
         CP56Time2a_createFromMsTimestamp(&testTimestamp, Hal_getTimeInMs());
 
-        // 测试帧带时标 
+        // 测试帧带时标
         CS104_Connection_sendTestCommandWithTimestamp(con, 1, 0x4938, &testTimestamp);
 
 #if 0
@@ -176,9 +316,22 @@ main(int argc, char** argv)
         CS104_Connection_sendClockSyncCommand(con, 1, &newTime);
 #endif
 
-        printf("Wait ...\n");
-
-        Thread_sleep(1000);
+        // **添加循环，让程序持续运行，直到用户输入 'q'**
+        char input[10];
+        while (true)
+        {
+            printf("> ");
+            fflush(stdout);
+            if (fgets(input, sizeof(input), stdin))
+            {
+                if (input[0] == 'q' && (input[1] == '\n' || input[1] == '\0'))
+                {
+                    printf("Exiting...\n");
+                    break;
+                }
+            }
+            Thread_sleep(1000);
+        }
     }
     else
         printf("Connect failed!\n");
@@ -189,5 +342,3 @@ main(int argc, char** argv)
 
     printf("exit\n");
 }
-
-
