@@ -9,28 +9,45 @@
 #include "hal_thread.h"
 #include "hal_time.h"
 
-static bool running = true;
+#include <getopt.h>
+#include "simple_server.h"
 
-void
-sigint_handler(int signalId)
+#include <time.h>
+
+#define YX_NUM_DEFAULT 10
+#define YC_NUM_DEFAULT 10
+#define UPDATE_GAP_DEFAULT 1
+#define IOA_MERGE_NUM 40 // 合并的点个数
+
+static bool running = true;
+static int16_t mYxScaledValue = 1;
+static int16_t mYcScaledValue = 1;
+static int mYxNum = YX_NUM_DEFAULT;
+static int mYcNum = YC_NUM_DEFAULT;
+static bool mIOAMerge = false;
+static int mUpdateSecond = false; // 更新频率
+
+bool auto_mode = false;
+Thread update_thread;
+
+void sigint_handler(int signalId)
 {
     running = false;
 }
 
-void
-printCP56Time2a(CP56Time2a time)
+void printCP56Time2a(CP56Time2a time)
 {
     printf("%02i:%02i:%02i %02i/%02i/%04i", CP56Time2a_getHour(time),
-                             CP56Time2a_getMinute(time),
-                             CP56Time2a_getSecond(time),
-                             CP56Time2a_getDayOfMonth(time),
-                             CP56Time2a_getMonth(time),
-                             CP56Time2a_getYear(time) + 2000);
+           CP56Time2a_getMinute(time),
+           CP56Time2a_getSecond(time),
+           CP56Time2a_getDayOfMonth(time),
+           CP56Time2a_getMonth(time),
+           CP56Time2a_getYear(time) + 2000);
 }
 
 /* Callback handler to log sent or received messages (optional) */
 static void
-rawMessageHandler(void* parameter, IMasterConnection conneciton, uint8_t* msg, int msgSize, bool sent)
+rawMessageHandler(void *parameter, IMasterConnection conneciton, uint8_t *msg, int msgSize, bool sent)
 {
     if (sent)
         printf("SEND: ");
@@ -38,7 +55,8 @@ rawMessageHandler(void* parameter, IMasterConnection conneciton, uint8_t* msg, i
         printf("RCVD: ");
 
     int i;
-    for (i = 0; i < msgSize; i++) {
+    for (i = 0; i < msgSize; i++)
+    {
         printf("%02x ", msg[i]);
     }
 
@@ -46,9 +64,11 @@ rawMessageHandler(void* parameter, IMasterConnection conneciton, uint8_t* msg, i
 }
 
 static bool
-clockSyncHandler (void* parameter, IMasterConnection connection, CS101_ASDU asdu, CP56Time2a newTime)
+clockSyncHandler(void *parameter, IMasterConnection connection, CS101_ASDU asdu, CP56Time2a newTime)
 {
-    printf("Process time sync command with time "); printCP56Time2a(newTime); printf("\n");
+    printf("Process time sync command with time ");
+    printCP56Time2a(newTime);
+    printf("\n");
 
     uint64_t newSystemTimeInMs = CP56Time2a_toMsTimestamp(newTime);
 
@@ -62,108 +82,137 @@ clockSyncHandler (void* parameter, IMasterConnection connection, CS101_ASDU asdu
 
 // 总召处理
 static bool
-interrogationHandler(void* parameter, IMasterConnection connection, CS101_ASDU asdu, uint8_t qoi)
+interrogationHandler(void *parameter, IMasterConnection connection, CS101_ASDU asdu, uint8_t qoi)
 {
     printf("Received interrogation for group %i\n", qoi);
 
-    if (qoi == 20) { /* only handle station interrogation */
+    if (qoi == 20)
+    { /* only handle station interrogation */ // 全局总召换20，还有21~36组可以召唤
 
         CS101_AppLayerParameters alParams = IMasterConnection_getApplicationLayerParameters(connection);
 
         IMasterConnection_sendACT_CON(connection, asdu, false);
 
-        /* The CS101 specification only allows information objects without timestamp in GI responses */
-        CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_INTERROGATED_BY_STATION,
-                0, 1, false, false);
+        // 创建遥测点
+        createYcPoints(alParams, connection);
 
-        InformationObject io = (InformationObject) MeasuredValueScaled_create(NULL, 100, -1, IEC60870_QUALITY_GOOD);
-
-        CS101_ASDU_addInformationObject(newAsdu, io);
-
-        CS101_ASDU_addInformationObject(newAsdu, (InformationObject)
-            MeasuredValueScaled_create((MeasuredValueScaled) io, 101, 23, IEC60870_QUALITY_GOOD));
-
-        CS101_ASDU_addInformationObject(newAsdu, (InformationObject)
-            MeasuredValueScaled_create((MeasuredValueScaled) io, 102, 2300, IEC60870_QUALITY_GOOD));
-
-        InformationObject_destroy(io);
-
-        IMasterConnection_sendASDU(connection, newAsdu);
-
-        CS101_ASDU_destroy(newAsdu);
-
-        newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_INTERROGATED_BY_STATION,
-                    0, 1, false, false);
-
-        io = (InformationObject) SinglePointInformation_create(NULL, 104, true, IEC60870_QUALITY_GOOD);
-
-        CS101_ASDU_addInformationObject(newAsdu, io);
-
-        CS101_ASDU_addInformationObject(newAsdu, (InformationObject)
-            SinglePointInformation_create((SinglePointInformation) io, 105, false, IEC60870_QUALITY_GOOD));
-
-        InformationObject_destroy(io);
-
-        IMasterConnection_sendASDU(connection, newAsdu);
-
-        CS101_ASDU_destroy(newAsdu);
-
-        newAsdu = CS101_ASDU_create(alParams, true, CS101_COT_INTERROGATED_BY_STATION,
-                0, 1, false, false);
-
-        CS101_ASDU_addInformationObject(newAsdu, io = (InformationObject) SinglePointInformation_create(NULL, 300, true, IEC60870_QUALITY_GOOD));
-        CS101_ASDU_addInformationObject(newAsdu, (InformationObject) SinglePointInformation_create((SinglePointInformation) io, 301, false, IEC60870_QUALITY_GOOD));
-        CS101_ASDU_addInformationObject(newAsdu, (InformationObject) SinglePointInformation_create((SinglePointInformation) io, 302, true, IEC60870_QUALITY_GOOD));
-        CS101_ASDU_addInformationObject(newAsdu, (InformationObject) SinglePointInformation_create((SinglePointInformation) io, 303, false, IEC60870_QUALITY_GOOD));
-        CS101_ASDU_addInformationObject(newAsdu, (InformationObject) SinglePointInformation_create((SinglePointInformation) io, 304, true, IEC60870_QUALITY_GOOD));
-        CS101_ASDU_addInformationObject(newAsdu, (InformationObject) SinglePointInformation_create((SinglePointInformation) io, 305, false, IEC60870_QUALITY_GOOD));
-        CS101_ASDU_addInformationObject(newAsdu, (InformationObject) SinglePointInformation_create((SinglePointInformation) io, 306, true, IEC60870_QUALITY_GOOD));
-        CS101_ASDU_addInformationObject(newAsdu, (InformationObject) SinglePointInformation_create((SinglePointInformation) io, 307, false, IEC60870_QUALITY_GOOD));
-
-        InformationObject_destroy(io);
-
-        IMasterConnection_sendASDU(connection, newAsdu);
-
-        CS101_ASDU_destroy(newAsdu);
-
-        newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_INTERROGATED_BY_STATION,
-                        0, 1, false, false);
-
-        io = (InformationObject) BitString32_create(NULL, 500, 0xaaaa);
-
-        CS101_ASDU_addInformationObject(newAsdu, io);
-
-        InformationObject_destroy(io);
-
-        IMasterConnection_sendASDU(connection, newAsdu);
-
-        CS101_ASDU_destroy(newAsdu);
+        // 创建遥信点
+        createYxPoints(alParams, connection);
 
         IMasterConnection_sendACT_TERM(connection, asdu);
     }
-    else {
+    else
+    {
         IMasterConnection_sendACT_CON(connection, asdu, true);
     }
 
     return true;
 }
 
+void createYxPoints(CS101_AppLayerParameters alParams, IMasterConnection connection)
+{
+    // 创建指定数量的遥信点
+    // 第二个数据帧 APDU->ASDU
+    int yxIndex = 1; // 遥测点索引
+    while (yxIndex <= mYxNum)
+    {
+        // 创建新的 ASDU
+        CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_INTERROGATED_BY_STATION,
+                                               0, 1, false, false);
+
+        InformationObject io = NULL;
+
+        // 每个 ASDU 最多 40 个遥测点
+        for (int i = 0; i < IOA_MERGE_NUM && yxIndex <= mYxNum; i++, yxIndex++)
+        {
+            if (io == NULL)
+            {
+                io = (InformationObject)SinglePointInformation_create(NULL, yxIndex, false, IEC60870_QUALITY_GOOD);
+                CS101_ASDU_addInformationObject(newAsdu, io);
+            }
+            else
+            {
+                InformationObject newIo = (InformationObject)
+                    SinglePointInformation_create((MeasuredValueScaled)io, yxIndex, false, IEC60870_QUALITY_GOOD);
+                CS101_ASDU_addInformationObject(newAsdu, newIo);
+            }
+        }
+
+        if (io)
+            CS101_ASDU_addInformationObject(newAsdu, io);
+
+        // 发送 ASDU
+        IMasterConnection_sendASDU(connection, newAsdu);
+
+        // 清理资源
+        if (io)
+            InformationObject_destroy(io);
+        CS101_ASDU_destroy(newAsdu);
+    }
+}
+
+// 创建指定数量的遥测点
+void createYcPoints(CS101_AppLayerParameters alParams, IMasterConnection connection)
+{
+    // CS101 规范仅允许 GI 响应中没有时间戳的信息对象
+    int ycIndex = 1; // 遥测点索引
+    while (ycIndex <= mYcNum)
+    {
+        // 创建新的 ASDU
+        CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_INTERROGATED_BY_STATION,
+                                               0, 1, false, false);
+
+        InformationObject io = NULL;
+
+        // 每个 ASDU 最多 40 个遥测点
+        for (int i = 0; i < IOA_MERGE_NUM && ycIndex <= mYcNum; i++)
+        {
+            if (io == NULL)
+            {
+                io = (InformationObject)MeasuredValueScaled_create(NULL, ycIndex++, 0, IEC60870_QUALITY_GOOD);
+                CS101_ASDU_addInformationObject(newAsdu, io);
+            }
+            else
+            {
+                InformationObject newIo = (InformationObject)
+                    MeasuredValueScaled_create((MeasuredValueScaled)io, ycIndex++, 0, IEC60870_QUALITY_GOOD);
+                CS101_ASDU_addInformationObject(newAsdu, newIo);
+            }
+        }
+
+        if (io)
+            CS101_ASDU_addInformationObject(newAsdu, io);
+
+        // 发送 ASDU
+        IMasterConnection_sendASDU(connection, newAsdu);
+
+        // 清理资源
+        if (io)
+            InformationObject_destroy(io);
+        CS101_ASDU_destroy(newAsdu);
+    }
+}
+
 // 遥调与遥控处理
 static bool
-asduHandler(void* parameter, IMasterConnection connection, CS101_ASDU asdu)
+asduHandler(void *parameter, IMasterConnection connection, CS101_ASDU asdu)
 {
-    if (CS101_ASDU_getTypeID(asdu) == C_SC_NA_1) {
+    if (CS101_ASDU_getTypeID(asdu) == C_SC_NA_1)
+    {
         printf("received single command\n");
 
-        if  (CS101_ASDU_getCOT(asdu) == CS101_COT_ACTIVATION) {
+        if (CS101_ASDU_getCOT(asdu) == CS101_COT_ACTIVATION)
+        {
             InformationObject io = CS101_ASDU_getElement(asdu, 0);
 
-            if (io) {
-                if (InformationObject_getObjectAddress(io) == 5000) {
-                    SingleCommand sc = (SingleCommand) io;
+            if (io)
+            {
+                if (InformationObject_getObjectAddress(io) == 5000)
+                {
+                    SingleCommand sc = (SingleCommand)io;
 
                     printf("IOA: %i switch to %i\n", InformationObject_getObjectAddress(io),
-                            SingleCommand_getState(sc));
+                           SingleCommand_getState(sc));
 
                     CS101_ASDU_setCOT(asdu, CS101_COT_ACTIVATION_CON);
                 }
@@ -172,7 +221,8 @@ asduHandler(void* parameter, IMasterConnection connection, CS101_ASDU asdu)
 
                 InformationObject_destroy(io);
             }
-            else {
+            else
+            {
                 printf("ERROR: message has no valid information object\n");
                 return true;
             }
@@ -189,7 +239,7 @@ asduHandler(void* parameter, IMasterConnection connection, CS101_ASDU asdu)
 }
 
 static bool
-connectionRequestHandler(void* parameter, const char* ipAddress)
+connectionRequestHandler(void *parameter, const char *ipAddress)
 {
     printf("New connection request from %s\n", ipAddress);
 
@@ -208,25 +258,204 @@ connectionRequestHandler(void* parameter, const char* ipAddress)
 }
 
 static void
-connectionEventHandler(void* parameter, IMasterConnection con, CS104_PeerConnectionEvent event)
+connectionEventHandler(void *parameter, IMasterConnection con, CS104_PeerConnectionEvent event)
 {
-    if (event == CS104_CON_EVENT_CONNECTION_OPENED) {
+    if (event == CS104_CON_EVENT_CONNECTION_OPENED)
+    {
         printf("Connection opened (%p)\n", con);
     }
-    else if (event == CS104_CON_EVENT_CONNECTION_CLOSED) {
+    else if (event == CS104_CON_EVENT_CONNECTION_CLOSED)
+    {
         printf("Connection closed (%p)\n", con);
     }
-    else if (event == CS104_CON_EVENT_ACTIVATED) {
+    else if (event == CS104_CON_EVENT_ACTIVATED)
+    {
         printf("Connection activated (%p)\n", con);
     }
-    else if (event == CS104_CON_EVENT_DEACTIVATED) {
+    else if (event == CS104_CON_EVENT_DEACTIVATED)
+    {
         printf("Connection deactivated (%p)\n", con);
     }
 }
 
-int
-main(int argc, char** argv)
+// 更新遥测数据
+int updateYcIOA(CS104_Slave *slave, CS101_AppLayerParameters *alParams)
 {
+    // 突变上送的数据
+    CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_PERIODIC, 0, 1, false, false);
+
+    InformationObject io = (InformationObject)MeasuredValueScaled_create(NULL, 1, mYcScaledValue, IEC60870_QUALITY_GOOD);
+
+    mYcScaledValue++;
+    if (mYcScaledValue > 65535)
+    {
+        mYcScaledValue = 1;
+    }
+
+    CS101_ASDU_addInformationObject(newAsdu, io);
+
+    InformationObject_destroy(io);
+
+    /* Add ASDU to slave event queue */
+    // 存储每一帧 frame.c Frame_appendBytes/Frame_getBuffer,由链路层发送(link_layer.c) SerialTransceiverFT12_sendMessage由SerialPort_write
+    CS104_Slave_enqueueASDU(slave, newAsdu);
+
+    CS101_ASDU_destroy(newAsdu);
+}
+
+// 循环调用
+int updateYcIOACycle(CS104_Slave *slave, CS101_AppLayerParameters *alParams)
+{
+    // 打印指针地址
+    printf("CS104_Slave 指针地址: %p\n", (void *)slave);
+    printf("CS101_AppLayerParameters 指针地址: %p\n", (void *)alParams);
+
+    struct timespec start, end;
+    long exec_time, sleep_time;
+
+    // 记录开始时间
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    // 执行更新
+    printf("定时更新: 调用 updateYcIOA()\n");
+    updateYcIOA(slave, alParams);
+
+    // 记录结束时间
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    // 计算执行时间（毫秒）
+    exec_time = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_nsec - start.tv_nsec) / 1000000;
+    sleep_time = mUpdateSecond * 1000 - exec_time;
+
+    // 计算休眠时间
+    if (sleep_time > 0)
+    {
+        printf("更新完成，耗时 %ld 毫秒，休眠 %ld 毫秒后继续。\n", exec_time, sleep_time);
+        Thread_sleep(sleep_time);
+    }
+    else
+    {
+        printf("更新耗时 %ld 毫秒，超过设定间隔 %d 秒，立即进行下一次更新。\n", exec_time, mUpdateSecond);
+    }
+}
+
+void *auto_update_function(void *params)
+{
+    void **args = (void **)params;
+    void *slave = args[0];
+    void *alParams = args[1];
+
+    while (auto_mode)
+    {
+        printf("定时更新: 调用 updateYcIOA()\n");
+        updateYcIOACycle(slave, alParams); // 调用更新函数
+        Thread_sleep(5000);           // 每 5 秒执行一次
+    }
+
+    return NULL;
+}
+
+void start_auto_update(void *slave, void *alParams)
+{
+    if (!auto_mode)
+    {
+        auto_mode = true;
+        printf("自动更新模式已启动，每 5 秒更新一次。\n");
+
+        void *args[] = {slave, alParams};
+        update_thread = Thread_create(auto_update_function, args, false);
+        Thread_start(update_thread);
+    }
+}
+
+void stop_auto_update()
+{
+    if (auto_mode)
+    {
+        auto_mode = false;
+        printf("自动更新模式已停止。\n");
+        Thread_destroy(update_thread);
+    }
+}
+
+int main(int argc, char **argv)
+{
+    // 参数解析
+    struct option long_options[] = {
+        {"ip", required_argument, 0, 'i'},            // 服务端ip
+        {"port", required_argument, 0, 'p'},          // 服务监听端口
+        {"update_second", required_argument, 0, 'u'}, // 自动变化的更新时间，默认1s, 单位秒
+        {"ioa_merge", no_argument, 0, 0},             // ioa是否需要合并上送
+        {"yx_num", required_argument, 0, 0},          // 遥信数量
+        {"yc_num", required_argument, 0, 0},          // 遥测数量
+        {0, 0, 0, 0}                                  // 结束标志
+    };
+
+    int opt;
+    char *ip = NULL;
+    int port = NULL;
+    int ioa_merge = 0;
+    int update_second = 1;
+    int yx_num = 0;
+    int yc_num = 0;
+
+    int option_index = 0;
+    while ((opt = getopt_long(argc, argv, "i:p:u:", long_options, &option_index)) != -1)
+    {
+        switch (opt)
+        {
+        case 'i':
+            ip = optarg;
+            break;
+        case 'p':
+            port = atoi(optarg);
+            break;
+        case 'u':
+            update_second = atoi(optarg);
+            break;
+        case 0:
+            if (strcmp(long_options[option_index].name, "ioa_merge") == 0)
+            {
+                ioa_merge = 1;
+            }
+            else if (strcmp(long_options[option_index].name, "yx_num") == 0)
+            {
+                yx_num = atoi(optarg);
+            }
+            else if (strcmp(long_options[option_index].name, "yc_num") == 0)
+            {
+                yc_num = atoi(optarg);
+            }
+            break;
+        default:
+            fprintf(stderr, "Usage: %s --ip=<address> --port=<port> [--ioa_merge] [--yx_num=N] [--yc_num=N]\n", argv[0]);
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    if (yx_num <= 0)
+    {
+        yx_num = YX_NUM_DEFAULT;
+    }
+
+    if (yc_num <= 0)
+    {
+        yc_num = YC_NUM_DEFAULT;
+    }
+
+    if (update_second <= 0)
+    {
+        update_second = UPDATE_GAP_DEFAULT;
+    }
+
+    mYxNum = yx_num;
+    mYcNum = yc_num;
+    mIOAMerge = ioa_merge;
+    mUpdateSecond = update_second;
+
+    printf("IP 地址: %s, 端口是: %d, IOA是否合并: %d, 自动更新频率: %d, 遥信数量: %d, 遥测数量: %d\n",
+           ip, port, ioa_merge, update_second, yx_num, yc_num);
+
     /* Add Ctrl-C handler */
     signal(SIGINT, sigint_handler);
 
@@ -251,12 +480,8 @@ main(int argc, char** argv)
     CS104_APCIParameters apciParams = CS104_Slave_getConnectionParameters(slave);
 
     printf("APCI parameters:\n");
-    printf("  t0: %i\n", apciParams->t0);
-    printf("  t1: %i\n", apciParams->t1);
-    printf("  t2: %i\n", apciParams->t2);
-    printf("  t3: %i\n", apciParams->t3);
-    printf("  k: %i\n", apciParams->k);
-    printf("  w: %i\n", apciParams->w);
+    printf("  t0: %i,  t1: %i,  t2: %i, t3: %i, k: %i, w: %i\n",
+           apciParams->t0, apciParams->t1, apciParams->t2, apciParams->t3, apciParams->k, apciParams->w);
 
     /* set the callback handler for the clock synchronization command */
     CS104_Slave_setClockSyncHandler(slave, clockSyncHandler, NULL);
@@ -274,40 +499,74 @@ main(int argc, char** argv)
     CS104_Slave_setConnectionEventHandler(slave, connectionEventHandler, NULL);
 
     /* uncomment to log messages */
-    //CS104_Slave_setRawMessageHandler(slave, rawMessageHandler, NULL);
+    // CS104_Slave_setRawMessageHandler(slave, rawMessageHandler, NULL);
 
     CS104_Slave_start(slave);
 
-    if (CS104_Slave_isRunning(slave) == false) {
+    if (CS104_Slave_isRunning(slave) == false)
+    {
         printf("Starting server failed!\n");
         goto exit_program;
     }
-
-    int16_t scaledValue = 0;
 
     // 遥信点 SinglePointInformation_create
     // 遥测点 MeasuredValueNormalized_create
     // 遥调点 SetpointCommandNormalized_create
     // 遥控点 SingleCommand_create
-    while (running) {
+    bool auto_mode = false; // 是否自动更新
+    bool manu_mode = false; // 手动更新
 
-        Thread_sleep(1000);
+    while (running)
+    {
+        printf("请输入模式 (m=手动更新, a=自动更新, s=自动更新, q=退出): ");
+        char input = getchar();
 
-        CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_PERIODIC, 0, 1, false, false);
+        // 清除输入缓冲区
+        while (getchar() != '\n')
+            ;
 
-        InformationObject io = (InformationObject) MeasuredValueScaled_create(NULL, 110, scaledValue, IEC60870_QUALITY_GOOD);
+        switch (input)
+        {
+        case 'm':
+            manu_mode = true;
+            printf("切换到手动更新模式。\n");
+            break;
+        case 'a':
+            auto_mode = true;
+            printf("切换到自动更新模式。\n");
+            start_auto_update(slave, alParams);
+            break;
+        case 's':
+            auto_mode = false;
+            printf("停止更新数据！\n");
+            stop_auto_update();
+            break;
+        case 'q':
+            running = false;
+            stop_auto_update();
+            printf("退出程序。\n");
+            break;
+        default:
+            printf("无效输入，请输入 'm'、'a'、's' 或 'q'。\n");
+        }
 
-        scaledValue++;
+        // 处理更新逻辑
+        if (auto_mode)
+        {
+            printf("自动更新中...\n");
+            Thread_sleep(1000); // 2s 更新一次
+        }
+        else if (manu_mode)
+        {
+            printf("手动更新中...\n");
+        }
+        else
+        {
+            printf("等待手动更新，请输入 'm' 或 'a' 继续。\n");
+        }
 
-        CS101_ASDU_addInformationObject(newAsdu, io);
-
-        InformationObject_destroy(io);
-
-        /* Add ASDU to slave event queue */ 
-        // 存储每一帧 frame.c Frame_appendBytes/Frame_getBuffer,由链路层发送(link_layer.c) SerialTransceiverFT12_sendMessage由SerialPort_write
-        CS104_Slave_enqueueASDU(slave, newAsdu);
-
-        CS101_ASDU_destroy(newAsdu);
+        manu_mode = false;
+        Thread_sleep(100);
     }
 
     CS104_Slave_stop(slave);
