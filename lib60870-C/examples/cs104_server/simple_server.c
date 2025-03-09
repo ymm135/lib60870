@@ -19,16 +19,19 @@
 #define UPDATE_GAP_DEFAULT 1
 #define IOA_MERGE_NUM 40 // 合并的点个数
 
+#define TYPE_YX 1        // 遥信
+#define TYPE_YC (1 << 2) // 遥测
+
 static bool running = true;
-static int16_t mYxScaledValue = 1;
+static bool mYxScaledValue = 1;
 static int16_t mYcScaledValue = 1;
 static int mYxNum = YX_NUM_DEFAULT;
 static int mYcNum = YC_NUM_DEFAULT;
 static bool mIOAMerge = false;
 static int mUpdateSecond = false; // 更新频率
+static bool mIsStopAutoUpdateIOA = false;
 
-bool auto_mode = false;
-Thread update_thread;
+Thread mUpdateThread = NULL;
 
 void sigint_handler(int signalId)
 {
@@ -161,7 +164,6 @@ void createYcPoints(CS101_AppLayerParameters alParams, IMasterConnection connect
         // 创建新的 ASDU
         CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_INTERROGATED_BY_STATION,
                                                0, 1, false, false);
-
         InformationObject io = NULL;
 
         // 每个 ASDU 最多 40 个遥测点
@@ -279,36 +281,59 @@ connectionEventHandler(void *parameter, IMasterConnection con, CS104_PeerConnect
 }
 
 // 更新遥测数据
-int updateYcIOA(CS104_Slave *slave, CS101_AppLayerParameters *alParams)
+int updateIOA(CS104_Slave *slave, CS101_AppLayerParameters *alParams, int type, int16_t value)
 {
-    // 突变上送的数据
-    CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_PERIODIC, 0, 1, false, false);
+    int point_num = 1;
+    char *type_name = NULL;
 
-    InformationObject io = (InformationObject)MeasuredValueScaled_create(NULL, 1, mYcScaledValue, IEC60870_QUALITY_GOOD);
-
-    mYcScaledValue++;
-    if (mYcScaledValue > 65535)
+    if (type == TYPE_YC)
     {
-        mYcScaledValue = 1;
+        point_num = mYcNum;
+        type_name = "遥测";
+    }
+    else if (type == TYPE_YX)
+    {
+        point_num = mYxNum;
+        type_name = "遥信";
     }
 
-    CS101_ASDU_addInformationObject(newAsdu, io);
+    // 定期上送的数据
+    for (int i = 1; i <= point_num; i++)
+    {
+        CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_PERIODIC, 0, 1, false, false);
 
-    InformationObject_destroy(io);
+        InformationObject io = NULL;
 
-    /* Add ASDU to slave event queue */
-    // 存储每一帧 frame.c Frame_appendBytes/Frame_getBuffer,由链路层发送(link_layer.c) SerialTransceiverFT12_sendMessage由SerialPort_write
-    CS104_Slave_enqueueASDU(slave, newAsdu);
+        if (!io)
+        {
+            if (type == TYPE_YC)
+            {
+                io = (InformationObject)MeasuredValueScaled_create(NULL, i, value, IEC60870_QUALITY_GOOD);
+            }
+            else if (type == TYPE_YX)
+            {
+                io = (InformationObject)SinglePointInformation_create(NULL, i, value, IEC60870_QUALITY_GOOD);
+            }
+        }
 
-    CS101_ASDU_destroy(newAsdu);
+        CS101_ASDU_addInformationObject(newAsdu, io);
+        InformationObject_destroy(io);
+
+        /* Add ASDU to slave event queue */
+        // 存储每一帧 frame.c Frame_appendBytes/Frame_getBuffer,由链路层发送(link_layer.c) SerialTransceiverFT12_sendMessage由SerialPort_write
+        CS104_Slave_enqueueASDU(slave, newAsdu);
+        CS101_ASDU_destroy(newAsdu);
+    }
+
+    return value;
 }
 
 // 循环调用
-int updateYcIOACycle(CS104_Slave *slave, CS101_AppLayerParameters *alParams)
+int updateIOACycle(CS104_Slave *slave, CS101_AppLayerParameters *alParams)
 {
     // 打印指针地址
-    printf("CS104_Slave 指针地址: %p\n", (void *)slave);
-    printf("CS101_AppLayerParameters 指针地址: %p\n", (void *)alParams);
+    // printf("CS104_Slave 指针地址: %p\n", (void *)slave);
+    // printf("CS101_AppLayerParameters 指针地址: %p\n", (void *)alParams);
 
     struct timespec start, end;
     long exec_time, sleep_time;
@@ -317,20 +342,30 @@ int updateYcIOACycle(CS104_Slave *slave, CS101_AppLayerParameters *alParams)
     clock_gettime(CLOCK_MONOTONIC, &start);
 
     // 执行更新
-    printf("定时更新: 调用 updateYcIOA()\n");
-    updateYcIOA(slave, alParams);
+    updateIOA(slave, alParams, TYPE_YC, mYcScaledValue);
+    mYcScaledValue++;
+
+    updateIOA(slave, alParams, TYPE_YX, mYxScaledValue);
+    mYxScaledValue = !mYxScaledValue;
 
     // 记录结束时间
     clock_gettime(CLOCK_MONOTONIC, &end);
 
     // 计算执行时间（毫秒）
     exec_time = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_nsec - start.tv_nsec) / 1000000;
-    sleep_time = mUpdateSecond * 1000 - exec_time;
+    if (exec_time <= mUpdateSecond * 1000)
+    {
+        sleep_time = mUpdateSecond * 1000 - exec_time;
+    }
+    else
+    {
+        sleep_time = -(mUpdateSecond * 1000 - exec_time);
+    }
 
     // 计算休眠时间
     if (sleep_time > 0)
     {
-        printf("更新完成，耗时 %ld 毫秒，休眠 %ld 毫秒后继续。\n", exec_time, sleep_time);
+        printf("更新完成，遥测值: %d, 遥信值: %d, 耗时 %ld 毫秒，休眠 %ld 毫秒后继续。\n", mYcScaledValue, mYxScaledValue, exec_time, sleep_time);
         Thread_sleep(sleep_time);
     }
     else
@@ -339,43 +374,26 @@ int updateYcIOACycle(CS104_Slave *slave, CS101_AppLayerParameters *alParams)
     }
 }
 
-void *auto_update_function(void *params)
+#define BUFFER_SIZE 100
+char input_buffer[BUFFER_SIZE];
+
+void *input_thread(void *arg)
 {
-    void **args = (void **)params;
-    void *slave = args[0];
-    void *alParams = args[1];
-
-    while (auto_mode)
+    while (true)
     {
-        printf("定时更新: 调用 updateYcIOA()\n");
-        updateYcIOACycle(slave, alParams); // 调用更新函数
-        Thread_sleep(5000);           // 每 5 秒执行一次
+        if (fgets(input_buffer, BUFFER_SIZE, stdin) != NULL)
+        {
+            input_buffer[strcspn(input_buffer, "\n")] = '\0'; // 去掉换行符
+            if (strcmp(input_buffer, "s") == 0)
+            {
+                printf("停止自动更新IOA!\n");
+                mIsStopAutoUpdateIOA = true;
+                break;
+            }
+        }
+        Thread_sleep(1000);
     }
-
     return NULL;
-}
-
-void start_auto_update(void *slave, void *alParams)
-{
-    if (!auto_mode)
-    {
-        auto_mode = true;
-        printf("自动更新模式已启动，每 5 秒更新一次。\n");
-
-        void *args[] = {slave, alParams};
-        update_thread = Thread_create(auto_update_function, args, false);
-        Thread_start(update_thread);
-    }
-}
-
-void stop_auto_update()
-{
-    if (auto_mode)
-    {
-        auto_mode = false;
-        printf("自动更新模式已停止。\n");
-        Thread_destroy(update_thread);
-    }
 }
 
 int main(int argc, char **argv)
@@ -475,6 +493,10 @@ int main(int argc, char **argv)
     /* get the connection parameters - we need them to create correct ASDUs -
      * you can also modify the parameters here when default parameters are not to be used */
     CS101_AppLayerParameters alParams = CS104_Slave_getAppLayerParameters(slave);
+    printf("CS101_AppLayerParameters: sizeOfTypeId=%d, sizeOfVSQ=%d, sizeOfCOT=%d, "
+           "originatorAddress=%d, sizeOfCA=%d, sizeOfIOA=%d, maxSizeOfASDU=%d\n",
+           alParams->sizeOfTypeId, alParams->sizeOfVSQ, alParams->sizeOfCOT,
+           alParams->originatorAddress, alParams->sizeOfCA, alParams->sizeOfIOA, alParams->maxSizeOfASDU);
 
     /* when you have to tweak the APCI parameters (t0-t3, k, w) you can access them here */
     CS104_APCIParameters apciParams = CS104_Slave_getConnectionParameters(slave);
@@ -534,35 +556,39 @@ int main(int argc, char **argv)
         case 'a':
             auto_mode = true;
             printf("切换到自动更新模式。\n");
-            start_auto_update(slave, alParams);
+            mIsStopAutoUpdateIOA = false;
+
+            void *args[] = {};
+            mUpdateThread = Thread_create(input_thread, args, false);
+            Thread_start(mUpdateThread);
+
+            while (!mIsStopAutoUpdateIOA)
+            {
+                updateIOACycle(slave, alParams);
+            }
+
+            if(mUpdateThread != NULL){
+                Thread_destroy(mUpdateThread);
+                mUpdateThread = NULL;
+            }
+            auto_mode = false;
+
+            // 更新的线程要和创建连接的线程一致
+            // start_auto_update(slave, alParams);
             break;
         case 's':
             auto_mode = false;
             printf("停止更新数据！\n");
-            stop_auto_update();
             break;
         case 'q':
             running = false;
-            stop_auto_update();
-            printf("退出程序。\n");
+            if(mUpdateThread != NULL){
+                Thread_destroy(mUpdateThread);
+            }
+            printf("退出整个测试程序。\n");
             break;
         default:
             printf("无效输入，请输入 'm'、'a'、's' 或 'q'。\n");
-        }
-
-        // 处理更新逻辑
-        if (auto_mode)
-        {
-            printf("自动更新中...\n");
-            Thread_sleep(1000); // 2s 更新一次
-        }
-        else if (manu_mode)
-        {
-            printf("手动更新中...\n");
-        }
-        else
-        {
-            printf("等待手动更新，请输入 'm' 或 'a' 继续。\n");
         }
 
         manu_mode = false;
