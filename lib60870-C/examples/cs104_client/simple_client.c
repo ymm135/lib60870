@@ -5,8 +5,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define QUEUE_SIZE 1000
-#define WORKER_THREADS 10
+#include <time.h>
+
+#include <pthread.h>
+#include <sched.h>
+
+#define QUEUE_SIZE 10000
+#define WORKER_THREADS 4
 #define MAX_ASDU_TYPES 32
 #define MAX_IOA_COUNT 65536
 
@@ -33,9 +38,13 @@ typedef struct
     pthread_mutex_t lock;                         // 用于线程同步
 } ASDU_Stats;
 
+// 计时器结构体，保存开始和结束时间
+typedef struct {
+    clock_t start;
+    clock_t end;
+} Timer;
+
 ASDU_Stats asduStats;  // 全局统计变量
-
-
 RingBuffer asduQueue;
 
 void ringBufferInit(RingBuffer *rb)
@@ -71,6 +80,18 @@ CS101_ASDU *dequeue(RingBuffer *rb)
     pthread_mutex_unlock(&rb->lock);
     Semaphore_post(rb->empty);
     return asdu;
+}
+
+// 启动计时器
+void startTimer(Timer* timer) {
+    timer->start = clock();
+}
+
+// 停止计时器并打印时间差（毫秒）
+void stopTimer(Timer* timer) {
+    timer->end = clock();
+    double duration = ((double)(timer->end - timer->start)) / CLOCKS_PER_SEC * 1000; // 毫秒
+    printf("Function execution time: %.3f milliseconds\n", duration);
 }
 
 void updateStats(CS101_ASDU asdu)
@@ -123,6 +144,24 @@ void workerThreadFunction(void *arg)
     }
 }
 
+char* formatTimestamp() {
+    time_t rawtime;
+    struct tm *timeinfo;
+
+    // 获取当前时间戳
+    time(&rawtime);
+    timeinfo = localtime(&rawtime);
+
+    // 为返回的字符串动态分配内存
+    char *timestamp = (char*)malloc(20 * sizeof(char)); // 格式: "YYYY-MM-DD HH:MM:SS"
+    if (timestamp != NULL) {
+        // 格式化时间为：年-月-日 时:分:秒
+        strftime(timestamp, 20, "%Y-%m-%d %H:%M:%S", timeinfo);
+    }
+
+    return timestamp;
+}
+
 void statsThreadFunction(void *arg)
 {
     while (1)
@@ -130,7 +169,6 @@ void statsThreadFunction(void *arg)
         Thread_sleep(1000);
         pthread_mutex_lock(&asduStats.lock);
 
-        printf("=== 每秒 ASDU及IOA 统计 ===\n");
         for (int i = 0; i < MAX_ASDU_TYPES; i++)
         {
             if (asduStats.asdu_count[i] > 0)
@@ -148,11 +186,9 @@ void statsThreadFunction(void *arg)
                     }
                 }
 
-                printf("ASDU 类型 %s(%d): %d 个\n", TypeID_toString(i), i, ioa_count);
+                printf("%s ASDU 类型 %s(%d): %d 个\n", formatTimestamp(), TypeID_toString(i), i, ioa_count);
             }
         }
-
-        printf("\n");
 
         // 重置统计
         memset(&asduStats, 0, sizeof(ASDU_Stats));

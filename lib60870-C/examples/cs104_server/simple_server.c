@@ -32,6 +32,7 @@ static int mUpdateSecond = false; // 更新频率
 static bool mIsStopAutoUpdateIOA = false;
 
 Thread mUpdateThread = NULL;
+time_t currentTime;
 
 void sigint_handler(int signalId)
 {
@@ -328,6 +329,26 @@ int updateIOA(CS104_Slave *slave, CS101_AppLayerParameters *alParams, int type, 
     return value;
 }
 
+char *formatTimestamp()
+{
+    time_t rawtime;
+    struct tm *timeinfo;
+
+    // 获取当前时间戳
+    time(&rawtime);
+    timeinfo = localtime(&rawtime);
+
+    // 为返回的字符串动态分配内存
+    char *timestamp = (char *)malloc(20 * sizeof(char)); // 格式: "YYYY-MM-DD HH:MM:SS"
+    if (timestamp != NULL)
+    {
+        // 格式化时间为：年-月-日 时:分:秒
+        strftime(timestamp, 20, "%Y-%m-%d %H:%M:%S", timeinfo);
+    }
+
+    return timestamp;
+}
+
 // 循环调用
 int updateIOACycle(CS104_Slave *slave, CS101_AppLayerParameters *alParams)
 {
@@ -365,7 +386,9 @@ int updateIOACycle(CS104_Slave *slave, CS101_AppLayerParameters *alParams)
     // 计算休眠时间
     if (sleep_time > 0)
     {
-        printf("更新完成，遥测值: %d, 遥信值: %d, 耗时 %ld 毫秒，休眠 %ld 毫秒后继续。\n", mYcScaledValue, mYxScaledValue, exec_time, sleep_time);
+
+        printf("%s 更新完成，遥测值: %d, 遥信值: %d, 耗时 %ld 毫秒，休眠 %ld 毫秒后继续。\n",
+               formatTimestamp(), mYcScaledValue, mYxScaledValue, exec_time, sleep_time);
         Thread_sleep(sleep_time);
     }
     else
@@ -396,6 +419,7 @@ void *input_thread(void *arg)
     return NULL;
 }
 
+// ./cs104_server --ip=127.0.0.1 --port=502 --ioa_merge --update_second=2 --yx_num=1500 --yc_num=2000
 int main(int argc, char **argv)
 {
     // 参数解析
@@ -480,7 +504,7 @@ int main(int argc, char **argv)
     /* create a new slave/server instance with default connection parameters and
      * default message queue size */
     // 队列大小在冗余模式时会起作用 SINGLE_REDUNDANCY_GROUP
-    CS104_Slave slave = CS104_Slave_create(100, 100);
+    CS104_Slave slave = CS104_Slave_create((mYcNum + mYxNum) / 10, (mYcNum + mYxNum) / 10);
 
     CS104_Slave_setLocalAddress(slave, "0.0.0.0");
 
@@ -567,7 +591,8 @@ int main(int argc, char **argv)
                 updateIOACycle(slave, alParams);
             }
 
-            if(mUpdateThread != NULL){
+            if (mUpdateThread != NULL)
+            {
                 Thread_destroy(mUpdateThread);
                 mUpdateThread = NULL;
             }
@@ -582,7 +607,8 @@ int main(int argc, char **argv)
             break;
         case 'q':
             running = false;
-            if(mUpdateThread != NULL){
+            if (mUpdateThread != NULL)
+            {
                 Thread_destroy(mUpdateThread);
             }
             printf("退出整个测试程序。\n");

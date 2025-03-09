@@ -14,8 +14,8 @@
                 "--port=502",
                 "--ioa_merge",
                 "--update_second=2",
-                "--yx_num=100",
-                "--yc_num=200"
+                "--yx_num=10000",
+                "--yc_num=10000"
             ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
