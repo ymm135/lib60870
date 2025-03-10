@@ -10,10 +10,16 @@
 #include <pthread.h>
 #include <sched.h>
 
+#include <semaphore.h>
+
 #define QUEUE_SIZE 10000
 #define WORKER_THREADS 4
-#define MAX_ASDU_TYPES 32
-#define MAX_IOA_COUNT 65536
+#define MAX_ASDU_TYPES 64
+#define MAX_IOA_COUNT 65535
+#define LOG_COUNT_MAX 12000
+
+static int logCount = 0;
+static bool DEBUG_LOG_SWITCH = false;
 
 typedef struct
 {
@@ -27,16 +33,15 @@ typedef struct
     int tail;
     int count;
     pthread_mutex_t lock;
-    Semaphore full;
-    Semaphore empty;
 } RingBuffer;
 
 typedef struct
 {
     int asdu_count[MAX_ASDU_TYPES];               // 统计每个ASDU类型的数量
     int ioa_count[MAX_ASDU_TYPES][MAX_IOA_COUNT]; // 每个ASDU类型下的每个IOA的数量
-    pthread_mutex_t lock;                         // 用于线程同步
 } ASDU_Stats;
+
+static pthread_mutex_t mAsduStatsLock; // 用于线程同步
 
 // 计时器结构体，保存开始和结束时间
 typedef struct
@@ -45,41 +50,87 @@ typedef struct
     clock_t end;
 } Timer;
 
-ASDU_Stats asduStats; // 全局统计变量
+ASDU_Stats *asduStats; // 全局统计变量
 RingBuffer asduQueue;
 
 void ringBufferInit(RingBuffer *rb)
 {
-    rb->head = rb->tail = rb->count = 0;
+    rb->head = rb->tail = 0;
+
+    __atomic_store_n(&rb->count, 0, __ATOMIC_RELAXED); // 初始化原子变量
+
     pthread_mutex_init(&rb->lock, NULL);
-    rb->full = Semaphore_create(0);
-    rb->empty = Semaphore_create(QUEUE_SIZE);
 }
 
 void enqueue(RingBuffer *rb, CS101_ASDU *asdu)
 {
-    Semaphore_wait(rb->empty);
+    if (__atomic_load_n(&rb->count, __ATOMIC_ACQUIRE) >= QUEUE_SIZE)
+    {
+        __atomic_fetch_add(&logCount, 1, __ATOMIC_RELEASE);
+        if (__atomic_load_n(&logCount, __ATOMIC_ACQUIRE) >= LOG_COUNT_MAX)
+        {
+            if (DEBUG_LOG_SWITCH)
+            {
+                printf("Trying to enqueue, enqueue is full : %d\n", __atomic_load_n(&rb->count, __ATOMIC_ACQUIRE));
+            }
+            __atomic_store_n(&logCount, 0, __ATOMIC_SEQ_CST);
+        }
+        return;
+    }
+
     pthread_mutex_lock(&rb->lock);
 
-    rb->buffer[rb->tail].asdu = asdu;
-    rb->tail = (rb->tail + 1) % QUEUE_SIZE;
-    rb->count++;
+    if (__atomic_load_n(&rb->count, __ATOMIC_ACQUIRE) < QUEUE_SIZE)
+    {
+        rb->buffer[rb->tail].asdu = asdu;
+        rb->tail = (rb->tail + 1) % QUEUE_SIZE;
+        __atomic_fetch_add(&rb->count, 1, __ATOMIC_RELEASE);
+    }
+
+    if (DEBUG_LOG_SWITCH)
+    {
+        // printf("enqueue success => count %d\n", __atomic_load_n(&rb->count, __ATOMIC_ACQUIRE));
+    }
 
     pthread_mutex_unlock(&rb->lock);
-    Semaphore_post(rb->full);
 }
 
 CS101_ASDU *dequeue(RingBuffer *rb)
 {
-    Semaphore_wait(rb->full);
+    if (__atomic_load_n(&rb->count, __ATOMIC_ACQUIRE) == 0)
+    {
+        __atomic_fetch_add(&logCount, 1, __ATOMIC_RELEASE);
+        if (__atomic_load_n(&logCount, __ATOMIC_ACQUIRE) >= LOG_COUNT_MAX)
+        {
+            if (DEBUG_LOG_SWITCH)
+            {
+                printf("Trying to dequeue, enqueue is empty : %d\n", __atomic_load_n(&rb->count, __ATOMIC_ACQUIRE));
+            }
+            __atomic_store_n(&logCount, 0, __ATOMIC_SEQ_CST);
+        }
+
+        Thread_sleep(20);
+        return NULL;
+    }
+
     pthread_mutex_lock(&rb->lock);
 
-    CS101_ASDU *asdu = rb->buffer[rb->head].asdu;
-    rb->head = (rb->head + 1) % QUEUE_SIZE;
-    rb->count--;
+    void *asdu = NULL;
+
+    if (__atomic_load_n(&rb->count, __ATOMIC_ACQUIRE) > 0)
+    {
+        asdu = rb->buffer[rb->head].asdu;
+        rb->head = (rb->head + 1) % QUEUE_SIZE;
+        __atomic_fetch_sub(&rb->count, 1, __ATOMIC_RELEASE); // 原子递减
+    }
+
+    if (DEBUG_LOG_SWITCH)
+    {
+        printf("dequeue success => count %d\n", __atomic_load_n(&rb->count, __ATOMIC_ACQUIRE));
+    }
 
     pthread_mutex_unlock(&rb->lock);
-    Semaphore_post(rb->empty);
+
     return asdu;
 }
 
@@ -102,18 +153,15 @@ void updateStats(CS101_ASDU asdu)
     int typeID = CS101_ASDU_getTypeID(asdu);                // 获取ASDU类型
     int numElements = CS101_ASDU_getNumberOfElements(asdu); // 获取该类型下的元素数量
 
-    // 加锁，确保线程安全
-    pthread_mutex_lock(&asduStats.lock);
-
-    // 确保类型ID在合理范围内
     if (typeID < 0 || typeID >= MAX_ASDU_TYPES)
     {
-        pthread_mutex_unlock(&asduStats.lock);
         return; // 如果类型ID不合法，直接返回
     }
 
+    pthread_mutex_lock(&mAsduStatsLock);
+
     // 对应类型的ASDU计数增加
-    asduStats.asdu_count[typeID]++;
+    asduStats->asdu_count[typeID]++;
 
     // 统计该类型下的每个IOA点位
     for (int i = 0; i < numElements; i++)
@@ -125,25 +173,26 @@ void updateStats(CS101_ASDU asdu)
             if (ioa >= 0 && ioa < MAX_IOA_COUNT)              // 确保IOA地址合法
             {
                 // 根据ASDU类型统计对应的IOA点位
-                asduStats.ioa_count[typeID][ioa]++;
+                asduStats->ioa_count[typeID][ioa]++;
             }
         }
     }
 
-    // 解锁
-    pthread_mutex_unlock(&asduStats.lock);
+    pthread_mutex_unlock(&mAsduStatsLock);
 }
 
 void workerThreadFunction(void *arg)
 {
-    while (1)
+    while (true)
     {
         CS101_ASDU *asdu = dequeue(&asduQueue);
         if (asdu)
         {
             updateStats(asdu);
         }
-        CS101_ASDU_destroy(asdu);
+
+        if (asdu != NULL)
+            CS101_ASDU_destroy(asdu);
     }
 }
 
@@ -169,44 +218,60 @@ char *formatTimestamp()
 
 void statsThreadFunction(void *arg)
 {
-    while (1)
+    while (true)
     {
-        Thread_sleep(1000);
-        pthread_mutex_lock(&asduStats.lock);
+        pthread_mutex_lock(&mAsduStatsLock);
+        u_int16_t ioaCount = 0;
+
+        ASDU_Stats *localStats = (ASDU_Stats *)malloc(sizeof(ASDU_Stats));
+        if (localStats == NULL) {
+            printf("localStats Memory allocation failed!\n");
+            pthread_mutex_unlock(&mAsduStatsLock);
+            return;
+        }
+
+        memcpy(localStats, asduStats, sizeof(ASDU_Stats)); 
+        memset(asduStats, 0, sizeof(ASDU_Stats));
 
         for (int i = 0; i < MAX_ASDU_TYPES; i++)
         {
-            if (asduStats.asdu_count[i] > 0)
+            if (localStats->asdu_count[i] > 0)
             {
-                // printf("ASDU 类型 %d: %d 个\n", i, asduStats.asdu_count[i]);
-
                 int ioa_count = 0;
                 // 打印每种ASDU类型下的IOA统计
                 for (int j = 0; j < MAX_IOA_COUNT; j++)
                 {
-                    if (asduStats.ioa_count[i][j] > 0)
-                    { // 统计每一种IOA有多少个点位 IOA 8: 1 次
-                        // printf("\tIOA %d: %d 次\n", j, asduStats.ioa_count[i][j]);
+                    if (localStats->ioa_count[i][j] > 0)
+                    {
                         ioa_count++;
+                        ioaCount++;
                     }
                 }
-
-                printf("%s ASDU 类型 %s(%d): %d 个\n", formatTimestamp(), TypeID_toString(i), i, ioa_count);
+                printf("%s ASDU TypeID %s(%d): %d 个\n", formatTimestamp(), TypeID_toString(i), i, ioa_count);
             }
         }
 
-        // 重置统计
-        memset(&asduStats, 0, sizeof(ASDU_Stats));
+        printf("IOA总点数: %d\n", ioaCount);
+        
+        free(localStats); // 释放本地统计数据
+        pthread_mutex_unlock(&mAsduStatsLock);
 
-        pthread_mutex_unlock(&asduStats.lock);
+        Thread_sleep(1000);
     }
 }
 
 void initThreads()
 {
     ringBufferInit(&asduQueue);
-    pthread_mutex_init(&asduStats.lock, NULL);
-    memset(&asduStats, 0, sizeof(asduStats));
+    pthread_mutex_init(&mAsduStatsLock, NULL);
+    
+    asduStats = (ASDU_Stats *)malloc(sizeof(ASDU_Stats));
+    if (asduStats == NULL)
+    {
+        printf("Memory allocation failed!\n");
+        return;
+    }
+    memset(asduStats, 0, sizeof(ASDU_Stats)); 
 
     for (int i = 0; i < WORKER_THREADS; i++)
     {
@@ -303,7 +368,7 @@ int main(int argc, char **argv)
 
     initThreads();
 
-    printf("Connecting to: %s:%i; local_ip: %s, local_port\n", ip, port, localIp, localPort);
+    printf("Connecting to: %s:%i; local_ip: %s, local_port:%d \n", ip, port, localIp, localPort);
     CS104_Connection con = CS104_Connection_create(ip, port);
 
     CS101_AppLayerParameters alParams = CS104_Connection_getAppLayerParameters(con);
@@ -381,6 +446,12 @@ int main(int argc, char **argv)
     Thread_sleep(1000);
 
     CS104_Connection_destroy(con);
+
+    
+    if (asduStats != NULL){
+        free(asduStats);
+        asduStats = NULL;
+    }
 
     printf("exit\n");
 }

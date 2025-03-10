@@ -301,7 +301,7 @@ int updateIOA(CS104_Slave *slave, CS101_AppLayerParameters *alParams, int type, 
     // 定期上送的数据
     for (int i = 1; i <= point_num; i++)
     {
-        CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_PERIODIC, 0, 1, false, false);
+        CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_SPONTANEOUS, 0, 1, false, false);
 
         InformationObject io = NULL;
 
@@ -564,7 +564,7 @@ int main(int argc, char **argv)
 
     while (running)
     {
-        printf("请输入模式 (m=手动更新, a=自动更新, s=自动更新, q=退出): ");
+        printf("请输入模式 (m=手动更新, a=自动更新, s=停止自动更新, q=退出): ");
         char input = getchar();
 
         // 清除输入缓冲区
