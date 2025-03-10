@@ -39,12 +39,13 @@ typedef struct
 } ASDU_Stats;
 
 // 计时器结构体，保存开始和结束时间
-typedef struct {
+typedef struct
+{
     clock_t start;
     clock_t end;
 } Timer;
 
-ASDU_Stats asduStats;  // 全局统计变量
+ASDU_Stats asduStats; // 全局统计变量
 RingBuffer asduQueue;
 
 void ringBufferInit(RingBuffer *rb)
@@ -83,12 +84,14 @@ CS101_ASDU *dequeue(RingBuffer *rb)
 }
 
 // 启动计时器
-void startTimer(Timer* timer) {
+void startTimer(Timer *timer)
+{
     timer->start = clock();
 }
 
 // 停止计时器并打印时间差（毫秒）
-void stopTimer(Timer* timer) {
+void stopTimer(Timer *timer)
+{
     timer->end = clock();
     double duration = ((double)(timer->end - timer->start)) / CLOCKS_PER_SEC * 1000; // 毫秒
     printf("Function execution time: %.3f milliseconds\n", duration);
@@ -96,16 +99,17 @@ void stopTimer(Timer* timer) {
 
 void updateStats(CS101_ASDU asdu)
 {
-    int typeID = CS101_ASDU_getTypeID(asdu);  // 获取ASDU类型
-    int numElements = CS101_ASDU_getNumberOfElements(asdu);  // 获取该类型下的元素数量
+    int typeID = CS101_ASDU_getTypeID(asdu);                // 获取ASDU类型
+    int numElements = CS101_ASDU_getNumberOfElements(asdu); // 获取该类型下的元素数量
 
     // 加锁，确保线程安全
     pthread_mutex_lock(&asduStats.lock);
 
     // 确保类型ID在合理范围内
-    if (typeID < 0 || typeID >= MAX_ASDU_TYPES) {
+    if (typeID < 0 || typeID >= MAX_ASDU_TYPES)
+    {
         pthread_mutex_unlock(&asduStats.lock);
-        return;  // 如果类型ID不合法，直接返回
+        return; // 如果类型ID不合法，直接返回
     }
 
     // 对应类型的ASDU计数增加
@@ -114,11 +118,11 @@ void updateStats(CS101_ASDU asdu)
     // 统计该类型下的每个IOA点位
     for (int i = 0; i < numElements; i++)
     {
-        InformationObject io = CS101_ASDU_getElement(asdu, i);  // 获取元素
+        InformationObject io = CS101_ASDU_getElement(asdu, i); // 获取元素
         if (io != NULL)
         {
-            int ioa = InformationObject_getObjectAddress(io);  // 获取IOA地址
-            if (ioa >= 0 && ioa < MAX_IOA_COUNT)  // 确保IOA地址合法
+            int ioa = InformationObject_getObjectAddress(io); // 获取IOA地址
+            if (ioa >= 0 && ioa < MAX_IOA_COUNT)              // 确保IOA地址合法
             {
                 // 根据ASDU类型统计对应的IOA点位
                 asduStats.ioa_count[typeID][ioa]++;
@@ -129,7 +133,6 @@ void updateStats(CS101_ASDU asdu)
     // 解锁
     pthread_mutex_unlock(&asduStats.lock);
 }
-
 
 void workerThreadFunction(void *arg)
 {
@@ -144,7 +147,8 @@ void workerThreadFunction(void *arg)
     }
 }
 
-char* formatTimestamp() {
+char *formatTimestamp()
+{
     time_t rawtime;
     struct tm *timeinfo;
 
@@ -153,8 +157,9 @@ char* formatTimestamp() {
     timeinfo = localtime(&rawtime);
 
     // 为返回的字符串动态分配内存
-    char *timestamp = (char*)malloc(20 * sizeof(char)); // 格式: "YYYY-MM-DD HH:MM:SS"
-    if (timestamp != NULL) {
+    char *timestamp = (char *)malloc(20 * sizeof(char)); // 格式: "YYYY-MM-DD HH:MM:SS"
+    if (timestamp != NULL)
+    {
         // 格式化时间为：年-月-日 时:分:秒
         strftime(timestamp, 20, "%Y-%m-%d %H:%M:%S", timeinfo);
     }
@@ -174,15 +179,15 @@ void statsThreadFunction(void *arg)
             if (asduStats.asdu_count[i] > 0)
             {
                 // printf("ASDU 类型 %d: %d 个\n", i, asduStats.asdu_count[i]);
-                
+
                 int ioa_count = 0;
                 // 打印每种ASDU类型下的IOA统计
                 for (int j = 0; j < MAX_IOA_COUNT; j++)
                 {
                     if (asduStats.ioa_count[i][j] > 0)
-                    {   // 统计每一种IOA有多少个点位 IOA 8: 1 次
+                    { // 统计每一种IOA有多少个点位 IOA 8: 1 次
                         // printf("\tIOA %d: %d 次\n", j, asduStats.ioa_count[i][j]);
-                        ioa_count ++;
+                        ioa_count++;
                     }
                 }
 
@@ -196,7 +201,6 @@ void statsThreadFunction(void *arg)
         pthread_mutex_unlock(&asduStats.lock);
     }
 }
-
 
 void initThreads()
 {
@@ -276,6 +280,8 @@ asduReceivedHandler(void *parameter, int address, CS101_ASDU asdu)
     }
 }
 
+// ./simple_client <server_ip> <server_port> <local_ip> <local_port>
+// local_ip和local_port 非必填项
 int main(int argc, char **argv)
 {
     const char *ip = "localhost";                 // 从站IP地址
@@ -293,11 +299,11 @@ int main(int argc, char **argv)
         localIp = argv[3];
 
     if (argc > 4)
-        port = atoi(argv[4]);
+        localPort = atoi(argv[4]);
 
     initThreads();
 
-    printf("Connecting to: %s:%i\n", ip, port);
+    printf("Connecting to: %s:%i; local_ip: %s, local_port\n", ip, port, localIp, localPort);
     CS104_Connection con = CS104_Connection_create(ip, port);
 
     CS101_AppLayerParameters alParams = CS104_Connection_getAppLayerParameters(con);
