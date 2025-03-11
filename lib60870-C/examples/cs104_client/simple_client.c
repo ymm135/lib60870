@@ -11,12 +11,14 @@
 #include <sched.h>
 
 #include <semaphore.h>
+#include "version.h"
 
 #define QUEUE_SIZE 10000
 #define WORKER_THREADS 4
 #define MAX_ASDU_TYPES 64
 #define MAX_IOA_COUNT 65535
 #define LOG_COUNT_MAX 12000
+#define TIMESTAMP_SIZE 20
 
 static int logCount = 0;
 static bool DEBUG_LOG_SWITCH = false;
@@ -53,6 +55,9 @@ typedef struct
 ASDU_Stats *asduStats; // 全局统计变量
 RingBuffer asduQueue;
 
+Thread mStatsThread; // 统计线程
+Thread mWorkThreadArr[WORKER_THREADS];
+
 void ringBufferInit(RingBuffer *rb)
 {
     rb->head = rb->tail = 0;
@@ -75,6 +80,9 @@ void enqueue(RingBuffer *rb, CS101_ASDU *asdu)
             }
             __atomic_store_n(&logCount, 0, __ATOMIC_SEQ_CST);
         }
+
+        // 释放asdu的内存
+        CS101_ASDU_destroy(asdu);
         return;
     }
 
@@ -176,6 +184,7 @@ void updateStats(CS101_ASDU asdu)
                 asduStats->ioa_count[typeID][ioa]++;
             }
         }
+        InformationObject_destroy(io);
     }
 
     pthread_mutex_unlock(&mAsduStatsLock);
@@ -189,31 +198,20 @@ void workerThreadFunction(void *arg)
         if (asdu)
         {
             updateStats(asdu);
-        }
-
-        if (asdu != NULL)
             CS101_ASDU_destroy(asdu);
+        }
     }
 }
 
-char *formatTimestamp()
+void formatTimestamp(char *timestamp, int size)
 {
     time_t rawtime;
     struct tm *timeinfo;
 
-    // 获取当前时间戳
     time(&rawtime);
     timeinfo = localtime(&rawtime);
 
-    // 为返回的字符串动态分配内存
-    char *timestamp = (char *)malloc(20 * sizeof(char)); // 格式: "YYYY-MM-DD HH:MM:SS"
-    if (timestamp != NULL)
-    {
-        // 格式化时间为：年-月-日 时:分:秒
-        strftime(timestamp, 20, "%Y-%m-%d %H:%M:%S", timeinfo);
-    }
-
-    return timestamp;
+    strftime(timestamp, size, "%Y-%m-%d %H:%M:%S", timeinfo);
 }
 
 void statsThreadFunction(void *arg)
@@ -224,14 +222,19 @@ void statsThreadFunction(void *arg)
         u_int16_t ioaCount = 0;
 
         ASDU_Stats *localStats = (ASDU_Stats *)malloc(sizeof(ASDU_Stats));
-        if (localStats == NULL) {
+        if (localStats == NULL)
+        {
             printf("localStats Memory allocation failed!\n");
             pthread_mutex_unlock(&mAsduStatsLock);
-            return;
+
+            Thread_sleep(200);
+            continue;
         }
 
-        memcpy(localStats, asduStats, sizeof(ASDU_Stats)); 
+        memcpy(localStats, asduStats, sizeof(ASDU_Stats));
         memset(asduStats, 0, sizeof(ASDU_Stats));
+        char timestampString[TIMESTAMP_SIZE];
+        formatTimestamp(timestampString, TIMESTAMP_SIZE);
 
         for (int i = 0; i < MAX_ASDU_TYPES; i++)
         {
@@ -247,12 +250,12 @@ void statsThreadFunction(void *arg)
                         ioaCount++;
                     }
                 }
-                printf("%s ASDU TypeID %s(%d): %d 个\n", formatTimestamp(), TypeID_toString(i), i, ioa_count);
+                printf("%s ASDU(%d) TypeID %s(%d): %d 个\n", timestampString, localStats->asdu_count[i], TypeID_toString(i), i, ioa_count);
             }
         }
 
         printf("IOA总点数: %d\n", ioaCount);
-        
+
         free(localStats); // 释放本地统计数据
         pthread_mutex_unlock(&mAsduStatsLock);
 
@@ -264,23 +267,29 @@ void initThreads()
 {
     ringBufferInit(&asduQueue);
     pthread_mutex_init(&mAsduStatsLock, NULL);
-    
+
     asduStats = (ASDU_Stats *)malloc(sizeof(ASDU_Stats));
     if (asduStats == NULL)
     {
         printf("Memory allocation failed!\n");
         return;
     }
-    memset(asduStats, 0, sizeof(ASDU_Stats)); 
+    memset(asduStats, 0, sizeof(ASDU_Stats));
 
     for (int i = 0; i < WORKER_THREADS; i++)
     {
-        Thread workerThread = Thread_create(workerThreadFunction, NULL, false);
-        Thread_start(workerThread);
+        mWorkThreadArr[i] = Thread_create(workerThreadFunction, NULL, false);
+        if (mWorkThreadArr[i] != NULL)
+        {
+            Thread_start(mWorkThreadArr[i]);
+        }
     }
 
-    Thread statsThread = Thread_create(statsThreadFunction, NULL, false);
-    Thread_start(statsThread);
+    mStatsThread = Thread_create(statsThreadFunction, NULL, false);
+    if (mStatsThread != NULL)
+    {
+        Thread_start(mStatsThread);
+    }
 }
 
 /* Callback handler to log sent or received messages (optional) */
@@ -349,6 +358,8 @@ asduReceivedHandler(void *parameter, int address, CS101_ASDU asdu)
 // local_ip和local_port 非必填项
 int main(int argc, char **argv)
 {
+    print_version();
+    
     const char *ip = "localhost";                 // 从站IP地址
     uint16_t port = IEC_60870_5_104_DEFAULT_PORT; // 从站端口
     const char *localIp = NULL;                   // 本地IP地址
@@ -447,10 +458,25 @@ int main(int argc, char **argv)
 
     CS104_Connection_destroy(con);
 
-    
-    if (asduStats != NULL){
+    // 释放资源
+    pthread_mutex_destroy(&mAsduStatsLock);
+    if (asduStats != NULL)
+    {
         free(asduStats);
         asduStats = NULL;
+    }
+
+    if (mStatsThread != NULL){
+        Thread_destroy(mStatsThread);
+        mStatsThread == NULL;
+    }
+
+    for (int i = 0; i < WORKER_THREADS; i++)
+    {
+        if (mWorkThreadArr[i] != NULL)
+        {
+            Thread_destroy(mWorkThreadArr[i]);
+        }
     }
 
     printf("exit\n");

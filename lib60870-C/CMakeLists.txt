@@ -3,6 +3,10 @@ cmake_minimum_required(VERSION 3.0)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g")
 
+# 启用 AddressSanitizer 和 ThreadSanitizer
+# set(CMAKE_C_FLAGS_DEBUG "-g -fsanitize=address -fno-omit-frame-pointer")
+# set(CMAKE_CXX_FLAGS_DEBUG "-g -fsanitize=address -fno-omit-frame-pointer")
+
 # automagically detect if we should cross-compile
 if(DEFINED ENV{TOOLCHAIN})
 	set(CMAKE_C_COMPILER	$ENV{TOOLCHAIN}gcc)

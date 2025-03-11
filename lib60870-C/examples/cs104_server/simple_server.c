@@ -8,6 +8,7 @@
 
 #include "hal_thread.h"
 #include "hal_time.h"
+#include "version.h"
 
 #include <getopt.h>
 #include "simple_server.h"
@@ -18,6 +19,8 @@
 #define YC_NUM_DEFAULT 10
 #define UPDATE_GAP_DEFAULT 1
 #define IOA_MERGE_NUM 40 // 合并的点个数
+#define YC_START_IOA_ADDR 16385 // 合并的点个数
+#define TIMESTAMP_SIZE 20
 
 #define TYPE_YX 1        // 遥信
 #define TYPE_YC (1 << 2) // 遥测
@@ -166,19 +169,20 @@ void createYcPoints(CS101_AppLayerParameters alParams, IMasterConnection connect
         CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_INTERROGATED_BY_STATION,
                                                0, 1, false, false);
         InformationObject io = NULL;
-
+        
+        int defaultValue = 666;
         // 每个 ASDU 最多 40 个遥测点
         for (int i = 0; i < IOA_MERGE_NUM && ycIndex <= mYcNum; i++)
         {
             if (io == NULL)
             {
-                io = (InformationObject)MeasuredValueScaled_create(NULL, ycIndex++, 0, IEC60870_QUALITY_GOOD);
+                io = (InformationObject)MeasuredValueScaled_create(NULL, ycIndex++, defaultValue, IEC60870_QUALITY_GOOD);
                 CS101_ASDU_addInformationObject(newAsdu, io);
             }
             else
             {
                 InformationObject newIo = (InformationObject)
-                    MeasuredValueScaled_create((MeasuredValueScaled)io, ycIndex++, 0, IEC60870_QUALITY_GOOD);
+                    MeasuredValueScaled_create((MeasuredValueScaled)io, ycIndex++, defaultValue, IEC60870_QUALITY_GOOD);
                 CS101_ASDU_addInformationObject(newAsdu, newIo);
             }
         }
@@ -309,7 +313,7 @@ int updateIOA(CS104_Slave *slave, CS101_AppLayerParameters *alParams, int type, 
         {
             if (type == TYPE_YC)
             {
-                io = (InformationObject)MeasuredValueScaled_create(NULL, i, value, IEC60870_QUALITY_GOOD);
+                io = (InformationObject)MeasuredValueScaled_create(NULL, YC_START_IOA_ADDR + i -1, value, IEC60870_QUALITY_GOOD);
             }
             else if (type == TYPE_YX)
             {
@@ -329,24 +333,15 @@ int updateIOA(CS104_Slave *slave, CS101_AppLayerParameters *alParams, int type, 
     return value;
 }
 
-char *formatTimestamp()
+void formatTimestamp(char *timestamp, int size)
 {
     time_t rawtime;
     struct tm *timeinfo;
 
-    // 获取当前时间戳
     time(&rawtime);
     timeinfo = localtime(&rawtime);
 
-    // 为返回的字符串动态分配内存
-    char *timestamp = (char *)malloc(20 * sizeof(char)); // 格式: "YYYY-MM-DD HH:MM:SS"
-    if (timestamp != NULL)
-    {
-        // 格式化时间为：年-月-日 时:分:秒
-        strftime(timestamp, 20, "%Y-%m-%d %H:%M:%S", timeinfo);
-    }
-
-    return timestamp;
+    strftime(timestamp, size, "%Y-%m-%d %H:%M:%S", timeinfo);
 }
 
 // 循环调用
@@ -387,8 +382,11 @@ int updateIOACycle(CS104_Slave *slave, CS101_AppLayerParameters *alParams)
     if (sleep_time > 0)
     {
 
+        char timestampString[TIMESTAMP_SIZE];
+        formatTimestamp(timestampString, TIMESTAMP_SIZE);
+
         printf("%s 更新完成，遥测值: %d, 遥信值: %d, 耗时 %ld 毫秒，休眠 %ld 毫秒后继续。\n",
-               formatTimestamp(), mYcScaledValue, mYxScaledValue, exec_time, sleep_time);
+               timestampString, mYcScaledValue, mYxScaledValue, exec_time, sleep_time);
         Thread_sleep(sleep_time);
     }
     else
@@ -422,6 +420,8 @@ void *input_thread(void *arg)
 // ./cs104_server --ip=127.0.0.1 --port=502 --ioa_merge --update_second=2 --yx_num=1500 --yc_num=2000
 int main(int argc, char **argv)
 {
+    print_version();
+    
     // 参数解析
     struct option long_options[] = {
         {"ip", required_argument, 0, 'i'},            // 服务端ip
