@@ -319,8 +319,9 @@ TcpServerSocket_create(const char* address, int port)
 #else
 #warning "TCP_USER_TIMEOUT not supported by linux kernel"
 #endif
+        int res = bind(fd, (struct sockaddr*)&serverAddress, sizeof(serverAddress));
 
-        if (bind(fd, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) >= 0)
+        if ( res >= 0)
         {
             serverSocket = (ServerSocket)GLOBAL_MALLOC(sizeof(struct sServerSocket));
             serverSocket->fd = fd;
@@ -331,6 +332,8 @@ TcpServerSocket_create(const char* address, int port)
         else
         {
             close(fd);
+
+            printf("SOCKET: failed to set bind res: %s\n", strerror(res));
             return NULL;
         }
     }

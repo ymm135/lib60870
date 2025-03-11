@@ -10,8 +10,8 @@
             "request": "launch",
             "program": "${workspaceFolder}/build/examples/cs104_server/cs104_server",
             "args": [
-                "--ip=127.0.0.1",
-                "--port=502",
+                "--ip=10.25.20.110",
+                "--port=2405",
                 "--ioa_merge",
                 "--update_second=2",
                 "--yx_num=10000",

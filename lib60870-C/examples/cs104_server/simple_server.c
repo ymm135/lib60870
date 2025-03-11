@@ -18,7 +18,7 @@
 #define YX_NUM_DEFAULT 10
 #define YC_NUM_DEFAULT 10
 #define UPDATE_GAP_DEFAULT 1
-#define IOA_MERGE_NUM 40 // 合并的点个数
+#define IOA_MERGE_NUM 40        // 合并的点个数
 #define YC_START_IOA_ADDR 16385 // 合并的点个数
 #define TIMESTAMP_SIZE 20
 
@@ -169,7 +169,7 @@ void createYcPoints(CS101_AppLayerParameters alParams, IMasterConnection connect
         CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_INTERROGATED_BY_STATION,
                                                0, 1, false, false);
         InformationObject io = NULL;
-        
+
         int defaultValue = 666;
         // 每个 ASDU 最多 40 个遥测点
         for (int i = 0; i < IOA_MERGE_NUM && ycIndex <= mYcNum; i++)
@@ -313,7 +313,7 @@ int updateIOA(CS104_Slave *slave, CS101_AppLayerParameters *alParams, int type, 
         {
             if (type == TYPE_YC)
             {
-                io = (InformationObject)MeasuredValueScaled_create(NULL, YC_START_IOA_ADDR + i -1, value, IEC60870_QUALITY_GOOD);
+                io = (InformationObject)MeasuredValueScaled_create(NULL, YC_START_IOA_ADDR + i - 1, value, IEC60870_QUALITY_GOOD);
             }
             else if (type == TYPE_YX)
             {
@@ -421,7 +421,7 @@ void *input_thread(void *arg)
 int main(int argc, char **argv)
 {
     print_version();
-    
+
     // 参数解析
     struct option long_options[] = {
         {"ip", required_argument, 0, 'i'},            // 服务端ip
@@ -435,7 +435,7 @@ int main(int argc, char **argv)
 
     int opt;
     char *ip = NULL;
-    int port = NULL;
+    uint16_t port = NULL;
     int ioa_merge = 0;
     int update_second = 1;
     int yx_num = 0;
@@ -447,10 +447,26 @@ int main(int argc, char **argv)
         switch (opt)
         {
         case 'i':
-            ip = optarg;
+            if (optarg == NULL)
+            {
+                ip = "0.0.0.0";
+            }
+            else
+            {
+                ip = optarg;
+            }
+
             break;
         case 'p':
-            port = atoi(optarg);
+            if (atoi(optarg) < 0)
+            {
+                port = 2404;
+            }
+            else
+            {
+                port = atoi(optarg);
+            }
+
             break;
         case 'u':
             update_second = atoi(optarg);
@@ -506,8 +522,9 @@ int main(int argc, char **argv)
     // 队列大小在冗余模式时会起作用 SINGLE_REDUNDANCY_GROUP
     CS104_Slave slave = CS104_Slave_create((mYcNum + mYxNum) / 10, (mYcNum + mYxNum) / 10);
 
-    CS104_Slave_setLocalAddress(slave, "0.0.0.0");
-
+    CS104_Slave_setLocalAddress(slave, ip);
+    CS104_Slave_setLocalPort(slave, port);
+    
     /* Set mode to a single redundancy group
      * NOTE: library has to be compiled with CONFIG_CS104_SUPPORT_SERVER_MODE_SINGLE_REDUNDANCY_GROUP enabled (=1)
      */
