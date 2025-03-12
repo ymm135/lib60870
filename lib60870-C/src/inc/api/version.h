@@ -3,7 +3,7 @@
 
 #include <stdio.h>
 
-#define SOFT_VERSION "V1.0_20250311"
+#define SOFT_VERSION "V1.2_20250312"
 
 void print_version(){
     fprintf(stdout, "=================================================================\n");

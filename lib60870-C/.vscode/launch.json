@@ -40,7 +40,7 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/examples/cs104_client/simple_client",
-            "args": [],
+            "args": ["10.25.20.2", "2404", "10.25.20.111","56231"],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],

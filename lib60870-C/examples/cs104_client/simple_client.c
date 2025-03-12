@@ -18,10 +18,15 @@
 #define MAX_ASDU_TYPES 64
 #define MAX_IOA_COUNT 65535
 #define LOG_COUNT_MAX 12000
-#define TIMESTAMP_SIZE 20
+#define TIMESTAMP_SIZE 25
+
+#define TYPE_COMMAND_YK 1
+#define TYPE_COMMAND_YT 2
 
 static int logCount = 0;
 static bool DEBUG_LOG_SWITCH = false;
+
+static bool isLogIOA = true;
 
 typedef struct
 {
@@ -203,15 +208,20 @@ void workerThreadFunction(void *arg)
     }
 }
 
-void formatTimestamp(char *timestamp, int size)
-{
-    time_t rawtime;
+void formatTimestamp(char *timestamp, int size) {
+    struct timeval tv;
     struct tm *timeinfo;
 
-    time(&rawtime);
-    timeinfo = localtime(&rawtime);
+    gettimeofday(&tv, NULL);  // 获取当前时间（秒+微秒）
+    timeinfo = localtime(&tv.tv_sec);  // 转换为本地时间
 
-    strftime(timestamp, size, "%Y-%m-%d %H:%M:%S", timeinfo);
+    // 格式化时间到秒
+    int len = strftime(timestamp, size, "%Y-%m-%d %H:%M:%S", timeinfo);
+    
+    // 追加毫秒部分
+    if (len > 0 && len < size) {
+        snprintf(timestamp + len, size - len, ".%03ld", tv.tv_usec / 1000);
+    }
 }
 
 void statsThreadFunction(void *arg)
@@ -250,11 +260,14 @@ void statsThreadFunction(void *arg)
                         ioaCount++;
                     }
                 }
-                printf("%s ASDU(%d) TypeID %s(%d): %d 个\n", timestampString, localStats->asdu_count[i], TypeID_toString(i), i, ioa_count);
+
+                if (isLogIOA)
+                    printf("%s ASDU(%d) TypeID %s(%d): %d 个\n", timestampString, localStats->asdu_count[i], TypeID_toString(i), i, ioa_count);
             }
         }
 
-        printf("IOA总点数: %d\n", ioaCount);
+        if (isLogIOA)
+            printf("IOA总点数: %d\n", ioaCount);
 
         free(localStats); // 释放本地统计数据
         pthread_mutex_unlock(&mAsduStatsLock);
@@ -342,16 +355,50 @@ connectionHandler(void *parameter, CS104_Connection connection, CS104_Connection
 static bool
 asduReceivedHandler(void *parameter, int address, CS101_ASDU asdu)
 {
+    IEC60870_5_TypeID typeId = CS101_ASDU_getTypeID(asdu);
+    if (typeId == C_SC_NA_1 || typeId == C_SE_NB_1){
+        char timestampString[TIMESTAMP_SIZE];
+        formatTimestamp(timestampString, TIMESTAMP_SIZE);
 
-    CS101_ASDU *asduCopy = CS101_ASDU_clone(asdu, NULL);
-    if (asduCopy)
-    {
-        enqueue(&asduQueue, asduCopy);
+        printf("%s Recv 遥调或者遥控返回 %s(%d)!\n",timestampString, TypeID_toString(typeId), typeId);
+    }else {
+        CS101_ASDU *asduCopy = CS101_ASDU_clone(asdu, NULL);
+        if (asduCopy)
+        {
+            enqueue(&asduQueue, asduCopy);
+        }
+        else
+        {
+            printf("ASDU copy failed!\n");
+        }
     }
-    else
+}
+
+// 遥信控制
+void Send_Command(CS104_Connection *con, int type, int coa, int ioa, int command, bool selectCommand)
+{ 
+    InformationObject sc = NULL;
+
+    char timestampString[TIMESTAMP_SIZE];
+    formatTimestamp(timestampString, TIMESTAMP_SIZE);
+
+    printf("%s Send control command C_SC_NA_1 coa=%d ,ioa=%d ,command=%d ,selectCommand=%d\n",
+           timestampString, coa, ioa, command, selectCommand);
+
+    if (type == TYPE_COMMAND_YK)
     {
-        printf("ASDU copy failed!\n");
+
+        // 遥控单点命令 C_SC_NA_1
+        sc = (InformationObject)SingleCommand_create(NULL, ioa, (command == 1 ? true : false), selectCommand, 0);
     }
+    else if (type == TYPE_COMMAND_YT)
+    {
+        // 遥测浮点
+        sc = (InformationObject)SetpointCommandScaled_create(NULL, ioa, command, selectCommand, 0);
+    }
+    CS104_Connection_sendProcessCommandEx(con, CS101_COT_ACTIVATION, coa, sc);
+
+    InformationObject_destroy(sc);
 }
 
 // ./simple_client <server_ip> <server_port> <local_ip> <local_port>
@@ -359,7 +406,7 @@ asduReceivedHandler(void *parameter, int address, CS101_ASDU asdu)
 int main(int argc, char **argv)
 {
     print_version();
-    
+
     const char *ip = "localhost";                 // 从站IP地址
     uint16_t port = IEC_60870_5_104_DEFAULT_PORT; // 从站端口
     const char *localIp = NULL;                   // 本地IP地址
@@ -376,8 +423,6 @@ int main(int argc, char **argv)
 
     if (argc > 4)
         localPort = atoi(argv[4]);
-
-    initThreads();
 
     printf("Connecting to: %s:%i; local_ip: %s, local_port:%d \n", ip, port, localIp, localPort);
     CS104_Connection con = CS104_Connection_create(ip, port);
@@ -399,6 +444,8 @@ int main(int argc, char **argv)
     {
         printf("Connected!\n");
 
+        initThreads();
+
         // 启动数据传输 Data Transfer
         CS104_Connection_sendStartDT(con);
 
@@ -415,40 +462,58 @@ int main(int argc, char **argv)
         // 测试帧带时标
         CS104_Connection_sendTestCommandWithTimestamp(con, 1, 0x4938, &testTimestamp);
 
-#if 0
-        InformationObject sc = (InformationObject)
-                SingleCommand_create(NULL, 5000, true, false, 0);
-
-        // 遥控单点命令 C_SC_NA_1 
-        printf("Send control command C_SC_NA_1\n");
-        CS104_Connection_sendProcessCommandEx(con, CS101_COT_ACTIVATION, 1, sc);
-
-        InformationObject_destroy(sc);
-
-        /* Send clock synchronization command */
-        struct sCP56Time2a newTime;
-
-        CP56Time2a_createFromMsTimestamp(&newTime, Hal_getTimeInMs());
-
-        printf("Send time sync command\n");
-        CS104_Connection_sendClockSyncCommand(con, 1, &newTime);
-#endif
-
         // **添加循环，让程序持续运行，直到用户输入 'q'**
-        char input[10];
+        char input[100];
         while (true)
         {
             printf("> ");
             fflush(stdout);
+
             if (fgets(input, sizeof(input), stdin))
             {
-                if (input[0] == 'q' && (input[1] == '\n' || input[1] == '\0'))
+                // 去掉换行符
+                input[strcspn(input, "\n")] = '\0';
+
+                // 检查是否输入 'q' 退出
+                if (strcmp(input, "q") == 0)
                 {
                     printf("Exiting...\n");
                     break;
                 }
+                else if (strcmp(input, "d") == 0)
+                {
+                    // 是否展示IOA统计
+                    isLogIOA = !isLogIOA;
+
+                    if (isLogIOA){
+                        printf("打开IOA统计...\n");
+                    }else{
+                        printf("关闭IOA统计...\n");
+                    }
+                    continue;
+                }
+
+                // 解析输入
+                char command[30];
+                int param1, param2;
+                int count = sscanf(input, "%s %d %d", command, &param1, &param2);
+
+                if (count > 0)
+                {
+                    if (strcmp(command, "yk") == 0 && count == 3)
+                    {
+                        Send_Command(con, TYPE_COMMAND_YK, 1, param1, param2, false);
+                    }
+                    else if (strcmp(command, "yt") == 0 && count == 3)
+                    {
+                        Send_Command(con, TYPE_COMMAND_YT, 1, param1, param2, false);
+                    }
+                    else
+                    {
+                        printf("Unknown command or invalid parameters\n");
+                    }
+                }
             }
-            Thread_sleep(1000);
         }
     }
     else
@@ -466,7 +531,8 @@ int main(int argc, char **argv)
         asduStats = NULL;
     }
 
-    if (mStatsThread != NULL){
+    if (mStatsThread != NULL)
+    {
         Thread_destroy(mStatsThread);
         mStatsThread == NULL;
     }
@@ -479,5 +545,5 @@ int main(int argc, char **argv)
         }
     }
 
-    printf("exit\n");
+    printf("==退出==\n");
 }

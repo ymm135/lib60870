@@ -20,7 +20,7 @@
 #define UPDATE_GAP_DEFAULT 1
 #define IOA_MERGE_NUM 40        // 合并的点个数
 #define YC_START_IOA_ADDR 16385 // 合并的点个数
-#define TIMESTAMP_SIZE 20
+#define TIMESTAMP_SIZE 25
 
 #define TYPE_YX 1        // 遥信
 #define TYPE_YC (1 << 2) // 遥测
@@ -30,6 +30,8 @@ static bool mYxScaledValue = 1;
 static int16_t mYcScaledValue = 1;
 static int mYxNum = YX_NUM_DEFAULT;
 static int mYcNum = YC_NUM_DEFAULT;
+static int mYkStart = 0;
+static int mYtStart = 0;
 static bool mIOAMerge = false;
 static int mUpdateSecond = false; // 更新频率
 static bool mIsStopAutoUpdateIOA = false;
@@ -106,6 +108,9 @@ interrogationHandler(void *parameter, IMasterConnection connection, CS101_ASDU a
         // 创建遥信点
         createYxPoints(alParams, connection);
 
+        // 创建遥控与遥调
+        createYkYtPoints(alParams, connection);
+
         IMasterConnection_sendACT_TERM(connection, asdu);
     }
     else
@@ -114,6 +119,77 @@ interrogationHandler(void *parameter, IMasterConnection connection, CS101_ASDU a
     }
 
     return true;
+}
+
+void createYkYtPoints(CS101_AppLayerParameters alParams, IMasterConnection connection)
+{
+    if (mYkStart > 0)
+    {
+        CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_INTERROGATED_BY_STATION,
+                                               0, 1, false, false);
+        InformationObject io = NULL;
+
+        // 每个 ASDU 最多 40 个遥测点
+        for (int i = mYkStart; i < mYkStart + 10; i++)
+        {
+            if (io == NULL)
+            {
+                io = (InformationObject)SingleCommand_create(NULL, i, false, false,0);
+                CS101_ASDU_addInformationObject(newAsdu, io);
+            }
+            else
+            {
+                InformationObject newIo = (InformationObject)
+                    SingleCommand_create((SingleCommand)io, i, false, false,0);
+                CS101_ASDU_addInformationObject(newAsdu, newIo);
+            }
+        }
+
+        if (io)
+            CS101_ASDU_addInformationObject(newAsdu, io);
+
+        // 发送 ASDU
+        IMasterConnection_sendASDU(connection, newAsdu);
+
+        // 清理资源
+        if (io)
+            InformationObject_destroy(io);
+        CS101_ASDU_destroy(newAsdu);
+    }
+
+    if (mYtStart > 0)
+    {
+        CS101_ASDU newAsdu = CS101_ASDU_create(alParams, false, CS101_COT_INTERROGATED_BY_STATION,
+                                               0, 1, false, false);
+        InformationObject io = NULL;
+
+        // 每个 ASDU 最多 40 个遥测点
+        for (int i = mYtStart; i < mYtStart + 10; i++)
+        {
+            if (io == NULL)
+            {
+                io = (InformationObject)SetpointCommandScaled_create(NULL, i, false, false,0);
+                CS101_ASDU_addInformationObject(newAsdu, io);
+            }
+            else
+            {
+                InformationObject newIo = (InformationObject)
+                    SetpointCommandScaled_create((SetpointCommandScaled)io, i, false, false,0);
+                CS101_ASDU_addInformationObject(newAsdu, newIo);
+            }
+        }
+
+        if (io)
+            CS101_ASDU_addInformationObject(newAsdu, io);
+
+        // 发送 ASDU
+        IMasterConnection_sendASDU(connection, newAsdu);
+
+        // 清理资源
+        if (io)
+            InformationObject_destroy(io);
+        CS101_ASDU_destroy(newAsdu);
+    }
 }
 
 void createYxPoints(CS101_AppLayerParameters alParams, IMasterConnection connection)
@@ -200,13 +276,17 @@ void createYcPoints(CS101_AppLayerParameters alParams, IMasterConnection connect
     }
 }
 
-// 遥调与遥控处理
+// 遥调与遥控处理, 遥控点必须从24576 开始，不然会报错
 static bool
 asduHandler(void *parameter, IMasterConnection connection, CS101_ASDU asdu)
 {
-    if (CS101_ASDU_getTypeID(asdu) == C_SC_NA_1)
+    IEC60870_5_TypeID typeId = CS101_ASDU_getTypeID(asdu);
+    if (typeId == C_SC_NA_1 || typeId == C_SE_NB_1)
     {
-        printf("received single command\n");
+        char timestampString[TIMESTAMP_SIZE];
+        formatTimestamp(timestampString, TIMESTAMP_SIZE);
+
+        printf("%s RECV command %s(&d)\n", timestampString, TypeID_toString(typeId), typeId);
 
         if (CS101_ASDU_getCOT(asdu) == CS101_COT_ACTIVATION)
         {
@@ -214,13 +294,9 @@ asduHandler(void *parameter, IMasterConnection connection, CS101_ASDU asdu)
 
             if (io)
             {
-                if (InformationObject_getObjectAddress(io) == 5000)
+                if (InformationObject_getObjectAddress(io) > 24576)
                 {
                     SingleCommand sc = (SingleCommand)io;
-
-                    printf("IOA: %i switch to %i\n", InformationObject_getObjectAddress(io),
-                           SingleCommand_getState(sc));
-
                     CS101_ASDU_setCOT(asdu, CS101_COT_ACTIVATION_CON);
                 }
                 else
@@ -237,7 +313,10 @@ asduHandler(void *parameter, IMasterConnection connection, CS101_ASDU asdu)
         else
             CS101_ASDU_setCOT(asdu, CS101_COT_UNKNOWN_COT);
 
+        char timestampStringA[TIMESTAMP_SIZE];
+        formatTimestamp(timestampStringA, TIMESTAMP_SIZE);
         IMasterConnection_sendASDU(connection, asdu);
+        printf("%s Send ASDU %s(&d)\n", timestampString, TypeID_toString(typeId), typeId);
 
         return true;
     }
@@ -335,13 +414,20 @@ int updateIOA(CS104_Slave *slave, CS101_AppLayerParameters *alParams, int type, 
 
 void formatTimestamp(char *timestamp, int size)
 {
-    time_t rawtime;
+    struct timeval tv;
     struct tm *timeinfo;
 
-    time(&rawtime);
-    timeinfo = localtime(&rawtime);
+    gettimeofday(&tv, NULL);          // 获取当前时间（秒+微秒）
+    timeinfo = localtime(&tv.tv_sec); // 转换为本地时间
 
-    strftime(timestamp, size, "%Y-%m-%d %H:%M:%S", timeinfo);
+    // 格式化时间到秒
+    int len = strftime(timestamp, size, "%Y-%m-%d %H:%M:%S", timeinfo);
+
+    // 追加毫秒部分
+    if (len > 0 && len < size)
+    {
+        snprintf(timestamp + len, size - len, ".%03ld", tv.tv_usec / 1000);
+    }
 }
 
 // 循环调用
@@ -430,6 +516,8 @@ int main(int argc, char **argv)
         {"ioa_merge", no_argument, 0, 0},             // ioa是否需要合并上送
         {"yx_num", required_argument, 0, 0},          // 遥信数量
         {"yc_num", required_argument, 0, 0},          // 遥测数量
+        {"yk_start", required_argument, 0, 0},        // 遥控起始位置
+        {"yt_start", required_argument, 0, 0},        // 遥调起始位置
         {0, 0, 0, 0}                                  // 结束标志
     };
 
@@ -484,9 +572,17 @@ int main(int argc, char **argv)
             {
                 yc_num = atoi(optarg);
             }
+            else if (strcmp(long_options[option_index].name, "yk_start") == 0)
+            {
+                mYkStart = atoi(optarg);
+            }
+            else if (strcmp(long_options[option_index].name, "yt_start") == 0)
+            {
+                mYtStart = atoi(optarg);
+            }
             break;
         default:
-            fprintf(stderr, "Usage: %s --ip=<address> --port=<port> [--ioa_merge] [--yx_num=N] [--yc_num=N]\n", argv[0]);
+            fprintf(stderr, "Usage: %s --ip=<address> --port=<port> [--ioa_merge] [--yx_num=N] [--yc_num=N] [--yk_start=N] [--yt_start=N]\n", argv[0]);
             exit(EXIT_FAILURE);
         }
     }
@@ -511,8 +607,8 @@ int main(int argc, char **argv)
     mIOAMerge = ioa_merge;
     mUpdateSecond = update_second;
 
-    printf("IP 地址: %s, 端口是: %d, IOA是否合并: %d, 自动更新频率: %d, 遥信数量: %d, 遥测数量: %d\n",
-           ip, port, ioa_merge, update_second, yx_num, yc_num);
+    printf("IP 地址: %s, 端口是: %d, IOA是否合并: %d, 自动更新频率: %d, 遥信数量: %d, 遥测数量: %d, 遥控起始点: %d, 遥调起始点: %d\n",
+           ip, port, ioa_merge, update_second, yx_num, yc_num, mYkStart, mYtStart);
 
     /* Add Ctrl-C handler */
     signal(SIGINT, sigint_handler);
@@ -524,7 +620,7 @@ int main(int argc, char **argv)
 
     CS104_Slave_setLocalAddress(slave, ip);
     CS104_Slave_setLocalPort(slave, port);
-    
+
     /* Set mode to a single redundancy group
      * NOTE: library has to be compiled with CONFIG_CS104_SUPPORT_SERVER_MODE_SINGLE_REDUNDANCY_GROUP enabled (=1)
      */
